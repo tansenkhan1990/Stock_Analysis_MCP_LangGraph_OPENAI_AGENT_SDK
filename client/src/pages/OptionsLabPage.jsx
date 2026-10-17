@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCurrency } from '../components/CurrencyProvider.jsx';
 import PayoffChart from '../components/PayoffChart.jsx';
 import SearchBox from '../components/SearchBox.jsx';
 import Stat from '../components/Stat.jsx';
 import { api } from '../lib/api.js';
-import { compact, expiryLabel, money, num, pct } from '../lib/format.js';
+import { compact, expiryLabel, money, num, pct, usd } from '../lib/format.js';
 
 const nearest = (contracts, target, side = 'nearest') =>
   [...(contracts || [])]
@@ -89,6 +90,8 @@ const PRESETS = [
 ];
 
 export default function OptionsLabPage({ symbol, go }) {
+  const { code, live } = useCurrency();
+  const displayCode = code === 'USD' || !live ? 'USD' : code;
   const [chain, setChain] = useState(null);
   const [expiration, setExpiration] = useState('');
   const [loading, setLoading] = useState(true);
@@ -99,10 +102,13 @@ export default function OptionsLabPage({ symbol, go }) {
   const [metrics, setMetrics] = useState(null);
   const [evaluating, setEvaluating] = useState(false);
   const [evalError, setEvalError] = useState('');
-  const [aiPlan, setAiPlan] = useState(null);
+  const [desk, setDesk] = useState(null);
+  const [deskError, setDeskError] = useState('');
   const [aiNote, setAiNote] = useState('');
   const [ideas, setIdeas] = useState([]);
+  const [ideasSource, setIdeasSource] = useState('engine');
   const [ideasLoading, setIdeasLoading] = useState(true);
+  const [ideasAiLoading, setIdeasAiLoading] = useState(false);
 
   const loadChain = useCallback(
     async (expiry) => {
@@ -127,23 +133,42 @@ export default function OptionsLabPage({ symbol, go }) {
   useEffect(() => {
     setLegs([]);
     setMetrics(null);
-    setAiPlan(null);
+    setDesk(null);
+    setDeskError('');
     setAiNote('');
     loadChain('');
+    // The desk call is the AI buy/sell read for this symbol; the chain itself
+    // stays mechanical so the page renders even while the model is thinking.
     api
-      .analysis(symbol)
-      .then((analysis) => {
-        const plan = analysis.options?.plans?.[0];
-        if (plan) setAiPlan({ plan, analysis });
-      })
-      .catch(() => setAiPlan(null));
+      .optionsDesk(symbol)
+      .then(setDesk)
+      .catch((err) => setDeskError(err.message));
     setIdeasLoading(true);
     api
       .optionsIdeas()
-      .then((data) => setIdeas(data.ideas || []))
+      .then((data) => {
+        setIdeas(data.ideas || []);
+        setIdeasSource(data.source || 'engine');
+      })
       .catch(() => setIdeas([]))
       .finally(() => setIdeasLoading(false));
   }, [symbol, loadChain]);
+
+  const loadIdeas = useCallback(async (ai) => {
+    if (ai) setIdeasAiLoading(true);
+    else setIdeasLoading(true);
+    setAiNote('');
+    try {
+      const data = await api.optionsIdeas(undefined, { ai });
+      setIdeas(data.ideas || []);
+      setIdeasSource(data.source || 'engine');
+    } catch (err) {
+      setAiNote(err.message);
+    } finally {
+      setIdeasAiLoading(false);
+      setIdeasLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!legs.length) {
@@ -208,11 +233,10 @@ export default function OptionsLabPage({ symbol, go }) {
     setLegs(next);
   };
 
-  const applyAiPlan = () => {
-    if (!aiPlan) return;
-    const { plan } = aiPlan;
+  const applyStructure = (structure, label) => {
+    if (!structure?.legs?.length) return;
     setLegs(
-      plan.legs.map((leg) => ({
+      structure.legs.map((leg) => ({
         kind: leg.kind,
         action: leg.action,
         strike: leg.strike,
@@ -222,8 +246,8 @@ export default function OptionsLabPage({ symbol, go }) {
         contractSymbol: leg.contractSymbol,
       })),
     );
-    setDte(plan.dte);
-    setAiNote(`Loaded ${plan.name} from the MarketPilot engine (${plan.expiration}).`);
+    if (structure.dte) setDte(structure.dte);
+    setAiNote(`${structure.name} loaded into the builder${label ? ` (${label})` : ''}.`);
   };
 
   const applyIdea = (idea) => {
@@ -304,7 +328,10 @@ export default function OptionsLabPage({ symbol, go }) {
         </div>
         <div className="control">
           <label>Spot</label>
-          <div className="control-value mono">{money(spot)}</div>
+          <div className="control-value mono">
+            {money(spot)}
+            {displayCode !== 'USD' && <span className="muted small"> ({usd(spot)})</span>}
+          </div>
         </div>
         <div className="control">
           <label>DTE</label>
@@ -330,7 +357,7 @@ export default function OptionsLabPage({ symbol, go }) {
             </div>
             <div className="control">
               <span className="control-label">Max pain</span>
-              <div className="control-value mono">{money(summary.maxPain, 0)}</div>
+              <div className="control-value mono">{usd(summary.maxPain, 0)}</div>
             </div>
             <div className="control">
               <span className="control-label">P/C OI</span>
@@ -343,6 +370,161 @@ export default function OptionsLabPage({ symbol, go }) {
           </>
         )}
       </section>
+
+      {!desk && !deskError && (
+        <section className="panel options-desk-panel">
+          <div className="panel-head">
+            <div>
+              <div className="eyebrow">AI OPTIONS DESK</div>
+              <h2>Reading the chain and choosing a structure…</h2>
+            </div>
+            <span className="muted small">The model weighs the technical plan, IV state, positioning and event risk</span>
+          </div>
+          <div className="ideas-grid">
+            {[0, 1].map((index) => (
+              <div key={index} className="idea-card skeleton-card" />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {desk && (
+        <section className={`panel options-desk-panel ${desk.decision?.action || 'hold'}`}>
+          <div className="panel-head">
+            <div>
+              <div className="eyebrow">
+                AI OPTIONS DESK · {expiryLabel(desk.expiration)} · {desk.dte} DTE
+              </div>
+              <h2>
+                {desk.decision?.actionLabel} · {desk.decision?.optionBias} expression
+              </h2>
+            </div>
+            <div className="chip-row">
+              <span className="chip">
+                {desk.source === 'ai'
+                  ? `${desk.decisionMeta?.provider || 'ai'} · ${desk.decisionMeta?.model || 'model'}`
+                  : 'engine-priced structure'}
+              </span>
+              <span className="chip">conviction {desk.decision?.conviction ?? '—'}%</span>
+              {desk.decisionMeta?.cached && <span className="chip">cached</span>}
+              {desk.decision?.agreesWithEngine === false && (
+                <span className="chip warn">engine alert says {desk.engine?.actionLabel}</span>
+              )}
+            </div>
+          </div>
+
+          <div className="options-desk-grid">
+            <div className="options-desk-copy">
+              {desk.decision?.thesis && <p className="day-ai-thesis">{desk.decision.thesis}</p>}
+              {desk.decision?.management && <p className="option-note">Management: {desk.decision.management}</p>}
+              {desk.decision?.whatWouldChangeMyMind && (
+                <p className="option-note">Would change the call: {desk.decision.whatWouldChangeMyMind}</p>
+              )}
+              {desk.decision?.risks?.length > 0 && (
+                <ul className="risk-list tight">
+                  {desk.decision.risks.map((risk) => (
+                    <li key={risk}>{risk}</li>
+                  ))}
+                </ul>
+              )}
+              {desk.decision?.invalidations?.length > 0 && (
+                <ul className="context-list">
+                  {desk.decision.invalidations.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              )}
+              {desk.decision?.catalysts?.length > 0 && (
+                <div className="day-catalysts">
+                  {desk.decision.catalysts.map((catalyst, index) => (
+                    <div key={`${catalyst.detail}-${index}`} className={`catalyst ${catalyst.direction}`}>
+                      <span className="catalyst-tag">{catalyst.type}</span>
+                      <span>{catalyst.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="options-desk-structure">
+              {desk.decision?.structure ? (
+                <>
+                  <div className="structure-head">
+                    <strong>{desk.decision.structure.name}</strong>
+                    <span className="chip">{desk.decision.structure.bias}</span>
+                    <span className="muted small">
+                      {desk.decision.structure.dte ?? desk.dte} DTE ·{' '}
+                      {expiryLabel(desk.decision.structure.expiration || desk.expiration)}
+                    </span>
+                  </div>
+                  <ul className="leg-list">
+                    {desk.decision.structure.legs.map((leg, index) => (
+                      <li key={`${leg.contractSymbol || leg.strike}-${index}`} className="leg-chip">
+                        <span className={`leg-action ${leg.action}`}>{leg.action}</span>
+                        <span>
+                          {leg.kind.toUpperCase()} {usd(leg.strike)}
+                        </span>
+                        <span className="muted">@ {usd(leg.premium)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="metric-grid">
+                    <Stat
+                      label={desk.decision.structure.metrics.isCredit ? 'Net credit' : 'Net debit'}
+                      value={usd(Math.abs(desk.decision.structure.metrics.netPremium), 0)}
+                    />
+                    <Stat
+                      label="Max profit"
+                      value={
+                        desk.decision.structure.metrics.maxProfitUnbounded
+                          ? 'Unlimited'
+                          : usd(desk.decision.structure.metrics.maxProfit, 0)
+                      }
+                      tone="up"
+                    />
+                    <Stat label="Max loss" value={usd(Math.abs(desk.decision.structure.metrics.maxLoss), 0)} tone="down" />
+                    <Stat
+                      label="Breakeven"
+                      value={(desk.decision.structure.metrics.breakevens || []).map((value) => usd(value)).join(' / ') || '—'}
+                    />
+                    <Stat
+                      label="Est. PoP"
+                      value={desk.decision.probabilityOfProfit !== null && desk.decision.probabilityOfProfit !== undefined ? `${desk.decision.probabilityOfProfit}%` : '—'}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-mini wide"
+                    onClick={() =>
+                      applyStructure(
+                        desk.decision.structure,
+                        desk.source === 'ai' ? desk.decisionMeta?.model : 'engine structure',
+                      )
+                    }
+                  >
+                    Load into builder
+                  </button>
+                </>
+              ) : (
+                <div className="empty-note">
+                  {desk.decision?.structureNote ||
+                    'No defined-risk structure expresses this call, so the desk is standing aside.'}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {desk.decisionError && <div className="alert alert-info tiny">{desk.decisionError}</div>}
+          {desk.candidates?.length > 0 && (
+            <p className="option-note">
+              Structures priced for this expiry: {desk.candidates.map((candidate) => candidate.name).join(' · ')} — the desk picks
+              the one that fits the call.
+            </p>
+          )}
+        </section>
+      )}
+
+      {deskError && <div className="alert alert-error">AI options desk unavailable — {deskError}</div>}
 
       {ideasLoading && !ideas.length && (
         <section className="panel ideas-panel">
@@ -365,10 +547,24 @@ export default function OptionsLabPage({ symbol, go }) {
         <section className="panel ideas-panel">
           <div className="panel-head">
             <div>
-              <div className="eyebrow">AI OPTIONS IDEAS</div>
-              <h2>Best defined-risk structure per name</h2>
+              <div className="eyebrow">{ideasSource === 'ai' ? 'AI OPTIONS IDEAS' : 'ENGINE-SCANNED IDEAS'}</div>
+              <h2>{ideasSource === 'ai' ? 'Model-picked structure per name' : 'Best defined-risk structure per name'}</h2>
             </div>
-            <span className="muted small">Only structures that match the alert · loads into the builder</span>
+            <div className="head-actions">
+              <span className="muted small">
+                {ideasSource === 'ai'
+                  ? 'The LLM options desk chose each structure · loads into the builder'
+                  : 'Engine scan — run the AI desk to let the model decide'}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => loadIdeas(ideasSource !== 'ai')}
+                disabled={ideasAiLoading || ideasLoading}
+              >
+                {ideasSource === 'ai' ? 'Use engine scan' : 'Run AI desk'}
+              </button>
+            </div>
           </div>
           <div className="ideas-grid">
             {ideas.map((idea) => (
@@ -380,13 +576,14 @@ export default function OptionsLabPage({ symbol, go }) {
                   </span>
                   {idea.setupLabel && <span className="setup-chip">{idea.setupLabel}</span>}
                   <span className="muted small">{idea.score}/100 quality</span>
+                  {idea.source === 'ai' && <span className="badge ai-badge">✦ {idea.model || 'AI'}</span>}
                 </div>
                 <div className="idea-name">{idea.plan.name}</div>
                 <div className="idea-stats">
                   <Stat label="IV state" value={idea.ivState} tone={idea.ivState === 'rich' ? 'down' : 'up'} />
                   <Stat label="Exp. move" value={`±${idea.expectedMovePct ?? '—'}%`} />
-                  <Stat label={idea.plan.isCredit ? 'Net credit' : 'Net debit'} value={money(Math.abs(idea.plan.netPremium), 0)} />
-                  <Stat label="Max loss" value={money(Math.abs(idea.plan.maxLoss), 0)} tone="down" />
+                  <Stat label={idea.plan.isCredit ? 'Net credit' : 'Net debit'} value={usd(Math.abs(idea.plan.netPremium), 0)} />
+                  <Stat label="Max loss" value={usd(Math.abs(idea.plan.maxLoss), 0)} tone="down" />
                   <Stat label="Est. PoP" value={idea.plan.probabilityOfProfit !== null ? `${idea.plan.probabilityOfProfit}%` : '—'} />
                   <Stat label="Expiry" value={expiryLabel(idea.expiration)} />
                 </div>
@@ -479,7 +676,7 @@ export default function OptionsLabPage({ symbol, go }) {
               </table>
             </div>
             <div className="chain-foot">
-              <span>ITM shading · IV annualised · OI = open interest</span>
+              <span>ITM shading · IV annualised · OI = open interest · strikes, bid and ask in USD</span>
               <span className="muted">Quotes may be delayed</span>
             </div>
           </section>
@@ -497,12 +694,23 @@ export default function OptionsLabPage({ symbol, go }) {
               )}
             </div>
 
-            {aiPlan && (
-              <button type="button" className="ai-plan-button" onClick={applyAiPlan}>
+            {desk?.decision?.structure && (
+              <button
+                type="button"
+                className="ai-plan-button"
+                onClick={() =>
+                  applyStructure(
+                    desk.decision.structure,
+                    desk.source === 'ai' ? desk.decisionMeta?.model : 'engine structure',
+                  )
+                }
+              >
                 <span>✦</span>
                 <span>
-                  Use AI structure
-                  <small>{aiPlan.plan.name} · {aiPlan.plan.dte} DTE</small>
+                  Use {desk.source === 'ai' ? 'AI' : 'engine'} structure
+                  <small>
+                    {desk.decision.structure.name} · {desk.decision.structure.dte ?? desk.dte} DTE
+                  </small>
                 </span>
               </button>
             )}
@@ -550,7 +758,7 @@ export default function OptionsLabPage({ symbol, go }) {
                       className="strike-input"
                       value={leg.strike}
                       onChange={(event) => updateLeg(index, { strike: Number(event.target.value) })}
-                      title="Strike"
+                      title="Strike (USD)"
                     />
                     <span className="leg-at">@</span>
                     <input
@@ -559,7 +767,7 @@ export default function OptionsLabPage({ symbol, go }) {
                       className="premium-input"
                       value={leg.premium}
                       onChange={(event) => updateLeg(index, { premium: Number(event.target.value) })}
-                      title="Premium"
+                      title="Premium (USD)"
                     />
                     <input
                       type="number"
@@ -587,20 +795,21 @@ export default function OptionsLabPage({ symbol, go }) {
             {metrics ? (
               <>
                 <div className="metric-grid">
-                  <Stat label={metrics.isCredit ? 'Net credit' : 'Net debit'} value={money(Math.abs(metrics.netPremium), 0)} />
-                  <Stat label="Max profit" value={metrics.maxProfitUnbounded ? 'Unlimited' : money(metrics.maxProfit, 0)} tone="up" />
-                  <Stat label="Max loss" value={money(Math.abs(metrics.maxLoss), 0)} tone="down" />
+                  <Stat label={metrics.isCredit ? 'Net credit' : 'Net debit'} value={usd(Math.abs(metrics.netPremium), 0)} />
+                  <Stat label="Max profit" value={metrics.maxProfitUnbounded ? 'Unlimited' : usd(metrics.maxProfit, 0)} tone="up" />
+                  <Stat label="Max loss" value={usd(Math.abs(metrics.maxLoss), 0)} tone="down" />
                   <Stat label="Return on risk" value={metrics.returnOnRisk ? `${metrics.returnOnRisk}×` : '—'} />
-                  <Stat label="Breakeven" value={metrics.breakevens.map((value) => money(value)).join(' / ') || '—'} />
+                  <Stat label="Breakeven" value={metrics.breakevens.map((value) => usd(value)).join(' / ') || '—'} />
                   <Stat label="Est. PoP" value={metrics.probabilityOfProfit !== null ? `${metrics.probabilityOfProfit}%` : '—'} />
                   <Stat label="Delta" value={num(metrics.greeks.delta, 2)} />
-                  <Stat label="Theta / day" value={money(metrics.greeks.theta, 2)} />
-                  {metrics.stockCost ? <Stat label="Stock cost" value={money(metrics.stockCost, 0)} /> : null}
+                  <Stat label="Theta / day" value={usd(metrics.greeks.theta, 2)} />
+                  {metrics.stockCost ? <Stat label="Stock cost" value={usd(metrics.stockCost, 0)} /> : null}
                   <Stat label="Vega" value={num(metrics.greeks.vega, 2)} />
                 </div>
-                <PayoffChart curve={metrics.curve} breakevens={metrics.breakevens} spot={spot} height={210} />
+                <PayoffChart curve={metrics.curve} breakevens={metrics.breakevens} spot={spot} height={210} nativeCurrency />
                 <p className="builder-disclaimer">
-                  Expiry P/L per contract. Fees, commissions and early assignment are excluded.
+                  Expiry P/L per contract in USD. This desk quotes the US contract in USD (strikes, premiums and P/L); the stock spot above
+                  is shown in {displayCode}, with the USD quote in brackets. Fees, commissions and early assignment are excluded.
                 </p>
               </>
             ) : (

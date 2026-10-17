@@ -1,5 +1,5 @@
-import { buildDossier, decideWithLLM } from '../agent/llmDecision.js';
 import { describeProvider } from '../agent/providers.js';
+import { ruleEngineMeta, symbolAiDecision } from '../agent/symbolDesk.js';
 import { ACTION_RANK, buildAlert } from '../analytics/alert.js';
 import { builtinDecision, combinedSignal, eventRisk, tradeTriggers } from '../analytics/decision.js';
 import { analyzeAnalystActions } from '../analytics/news.js';
@@ -214,56 +214,34 @@ export async function getResearch(symbol, { ai = false, refresh = false, persist
   const { meta, analysis, news, fundamentals, analyst, event, combined, fallback, newsHistory } = bundle;
 
   let decision = fallback;
-  let decisionMeta = { provider: 'rule-engine', model: 'MarketPilot rule engine', cached: false };
+  let decisionMeta = ruleEngineMeta();
   let decisionError = null;
 
   if (ai) {
-    const decisionKey = `decision:${symbol}`;
-    if (refresh) cache.clear(decisionKey);
-    const cached = cache.get(decisionKey);
-    if (cached) {
-      decision = cached.decision;
-      decisionMeta = { ...cached.meta, cached: true };
-    } else {
-      const provider = describeProvider();
-      if (!provider.live) {
-        decisionError = `No LLM key configured — showing the rule-engine call (${provider.label}).`;
-      } else {
-        try {
-          const result = await decideWithLLM({
-            dossier: buildDossier({
-              symbol,
-              meta,
-              analysis,
-              news,
-              analyst,
-              event,
-              options: analysis.options,
-              newsHistory,
-              alert: fallback.alert,
-            }),
-            fallback,
-          });
-          decision = result.decision;
-          decisionMeta = {
-            provider: provider.provider,
-            model: provider.model,
-            latencyMs: result.latencyMs,
-            usage: result.usage,
-            cached: false,
-          };
-          cache.set(decisionKey, { decision, meta: decisionMeta }, DECISION_TTL);
-        } catch (error) {
-          decisionError = `LLM call failed (${error.message}) — showing the rule-engine call.`;
-          decisionMeta = { provider: 'rule-engine', model: 'MarketPilot rule engine', cached: false };
-        }
-      }
-    }
+    // Shared with the Analyzer and the intraday desks, so the same symbol never
+    // shows two different model calls with two different confidence numbers.
+    const desk = await symbolAiDecision({
+      symbol,
+      meta,
+      analysis,
+      news,
+      newsHistory,
+      analyst,
+      event,
+      options: analysis.options,
+      alert: fallback.alert,
+      fallback,
+      refresh,
+      ttlMs: DECISION_TTL,
+    });
+    decision = desk.decision ?? fallback;
+    decisionMeta = desk.decisionMeta;
+    decisionError = desk.decisionError;
   }
 
   if (persistFallback) {
     decision = fallback;
-    decisionMeta = { provider: 'rule-engine', model: 'MarketPilot rule engine', cached: false };
+    decisionMeta = ruleEngineMeta();
   }
 
   return {

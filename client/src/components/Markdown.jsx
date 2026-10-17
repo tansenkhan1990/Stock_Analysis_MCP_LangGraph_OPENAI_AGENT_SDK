@@ -1,3 +1,6 @@
+import { useCurrency } from './CurrencyProvider.jsx';
+import { convertMoneyText } from '../lib/currency.js';
+
 function inline(text, keyPrefix = 'i') {
   const parts = String(text).split(/(\*\*[^*]+\*\*|`[^`]+`|_[^_]+_)/g).filter(Boolean);
   return parts.map((part, index) => {
@@ -12,7 +15,9 @@ function inline(text, keyPrefix = 'i') {
 const isTableSeparator = (line) => /^\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes('-');
 
 export default function Markdown({ text = '', className = '' }) {
-  const lines = String(text).replace(/\r/g, '').split('\n');
+  // Re-render on currency changes and translate USD amounts in AI prose.
+  useCurrency();
+  const lines = convertMoneyText(text).replace(/\r/g, '').split('\n');
   const blocks = [];
   let index = 0;
 

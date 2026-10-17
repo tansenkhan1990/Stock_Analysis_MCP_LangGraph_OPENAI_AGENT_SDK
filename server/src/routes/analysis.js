@@ -2,8 +2,29 @@ import { Router } from 'express';
 import { asyncHandler, normalizeSymbol } from '../lib/errors.js';
 import { getSnapshot, listSnapshots, listWatchlist, saveSnapshot } from '../lib/store.js';
 import { DEFAULT_SCAN_UNIVERSE, getAnalysis, scanSymbols } from '../services/analysisService.js';
+import { HOT_SCOPES, getHotStocks } from '../services/hotStocksService.js';
 
 export const analysisRouter = Router();
+
+analysisRouter.get(
+  '/hot-stocks',
+  asyncHandler(async (req, res) => {
+    const symbols = String(req.query.symbols || '')
+      .split(',')
+      .map((symbol) => symbol.trim().toUpperCase())
+      .filter(Boolean);
+    res.json(
+      await getHotStocks({
+        symbols,
+        scope: HOT_SCOPES.includes(String(req.query.scope)) ? String(req.query.scope) : 'market',
+        limit: req.query.limit,
+        // How many names of the live market tape get the full analysis.
+        depth: req.query.depth,
+        refresh: req.query.refresh === '1',
+      }),
+    );
+  }),
+);
 
 analysisRouter.get(
   '/scan',

@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
-import { shortDate } from '../lib/format.js';
+import { useCurrency } from './CurrencyProvider.jsx';
+import { money, shortDate } from '../lib/format.js';
 
 const WIDTH = 1000;
 const HEIGHT = 440;
@@ -27,6 +28,9 @@ function linePath(values, xFor, yFor) {
 }
 
 export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels, showSma = true, showRsi = true }) {
+  // Subscribe so axis labels and tooltips re-render when the currency flips.
+  useCurrency();
+
   const chart = useMemo(() => {
     if (!bars.length) return null;
     const lows = bars.map((bar) => bar.low);
@@ -120,7 +124,7 @@ export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels
             strokeDasharray="3 5"
           />
           <text x={WIDTH - PAD_RIGHT + 8} y={yFor(price) + 3.5} className="chart-axis-label">
-            {price.toFixed(price > 100 ? 0 : 2)}
+            {money(price, price > 100 ? 0 : 2)}
           </text>
         </g>
       ))}
@@ -136,7 +140,7 @@ export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels
             strokeDasharray="6 4"
           />
           <text x={PAD_LEFT + 6} y={yFor(support) - 5} className="chart-zone-label support">
-            support {support}
+            support {money(support)}
           </text>
         </g>
       )}
@@ -151,7 +155,7 @@ export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels
             strokeDasharray="6 4"
           />
           <text x={PAD_LEFT + 6} y={yFor(resistance) - 5} className="chart-zone-label resistance">
-            resistance {resistance}
+            resistance {money(resistance)}
           </text>
         </g>
       )}
@@ -183,7 +187,7 @@ export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels
               opacity="0.35"
             />
             <title>
-              {`${shortDate(bar.date)}  O ${bar.open} H ${bar.high} L ${bar.low} C ${bar.close}`}
+              {`${shortDate(bar.date)}  O ${money(bar.open)} H ${money(bar.high)} L ${money(bar.low)} C ${money(bar.close)}`}
             </title>
           </g>
         );

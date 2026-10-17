@@ -1,3 +1,6 @@
+import { useCurrency } from './CurrencyProvider.jsx';
+import { money, usd } from '../lib/format.js';
+
 const WIDTH = 900;
 const HEIGHT = 300;
 const LEFT = 8;
@@ -34,7 +37,18 @@ function signedSegments(curve) {
   return { positive, negative };
 }
 
-export default function PayoffChart({ curve = [], breakevens = [], spot, height = 230, compact = false }) {
+export default function PayoffChart({
+  curve = [],
+  breakevens = [],
+  spot,
+  height = 230,
+  compact = false,
+  nativeCurrency = false,
+}) {
+  // Subscribe to the display currency so labels re-render on toggle.
+  useCurrency();
+  const fmt = nativeCurrency ? usd : money;
+
   if (!curve?.length) return <div className="chart-empty">Build a strategy to see the payoff</div>;
 
   const profits = curve.map((point) => point.profit);
@@ -96,8 +110,8 @@ export default function PayoffChart({ curve = [], breakevens = [], spot, height 
             strokeDasharray={value === 0 ? '' : '3 5'}
           />
           <text x={WIDTH - RIGHT + 8} y={yFor(value) + 3.5} className="chart-axis-label">
-            {value >= 0 ? '+' : ''}
-            {Math.round(value).toLocaleString()}
+            {value >= 0 ? '+' : '−'}
+            {fmt(Math.abs(Math.round(value)), 0)}
           </text>
         </g>
       ))}
@@ -122,7 +136,7 @@ export default function PayoffChart({ curve = [], breakevens = [], spot, height 
             strokeDasharray="4 4"
           />
           <text x={xFor(spot) + 5} y={TOP + 10} className="chart-zone-label support">
-            spot {spot}
+            spot {fmt(spot, 0)}
           </text>
         </g>
       )}
@@ -131,7 +145,7 @@ export default function PayoffChart({ curve = [], breakevens = [], spot, height 
         <g key={`be-${price}`}>
           <circle cx={xFor(price)} cy={zeroY} r="4" fill="#0b1220" stroke="#fbbf24" strokeWidth="2" />
           <text x={xFor(price)} y={zeroY + 17} textAnchor="middle" className="chart-zone-label" fill="#fbbf24">
-            BE {price}
+            BE {fmt(price, 0)}
           </text>
         </g>
       ))}
@@ -139,7 +153,7 @@ export default function PayoffChart({ curve = [], breakevens = [], spot, height 
       {!compact &&
         xTicks.map((price, index) => (
           <text key={`x-${index}`} x={xFor(price)} y={HEIGHT - 8} textAnchor="middle" className="chart-axis-label">
-            ${price.toFixed(0)}
+            {fmt(price, 0)}
           </text>
         ))}
 

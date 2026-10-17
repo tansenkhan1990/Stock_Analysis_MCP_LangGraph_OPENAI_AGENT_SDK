@@ -1,12 +1,10 @@
-export const money = (value, digits = 2) => {
-  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
-  return Number(value).toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-};
+import { convertAmount, currencySymbol, formatMoney } from './currency.js';
+
+/** Display currency (EUR by default, live-converted) — used for all prices. */
+export const money = (value, digits = 2) => formatMoney(value, digits);
+
+/** Native US-dollar formatting for option contract terms (strikes, premiums). */
+export const usd = (value, digits = 2) => formatMoney(value, digits, { convert: false });
 
 export const num = (value, digits = 2) => {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
@@ -22,18 +20,22 @@ export const pct = (value, digits = 2, signed = true) => {
   return `${sign}${Number(value).toFixed(digits)}%`;
 };
 
+/** Market values (market cap, …) in the display currency. */
 export const bigNumber = (value) => {
-  if (!Number.isFinite(Number(value))) return '—';
-  const abs = Math.abs(value);
-  if (abs >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
-  if (abs >= 1e3) return `$${(value / 1e3).toFixed(1)}K`;
-  return `$${value.toFixed(2)}`;
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  const converted = convertAmount(value);
+  const symbol = currencySymbol();
+  const abs = Math.abs(converted);
+  if (abs >= 1e12) return `${symbol}${(converted / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${symbol}${(converted / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${symbol}${(converted / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${symbol}${(converted / 1e3).toFixed(1)}K`;
+  return `${symbol}${converted.toFixed(2)}`;
 };
 
+/** Share counts and other plain quantities — never currency-converted. */
 export const compact = (value) => {
-  if (!Number.isFinite(Number(value))) return '—';
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
   const abs = Math.abs(value);
   if (abs >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
   if (abs >= 1e6) return `${(value / 1e6).toFixed(2)}M`;

@@ -114,6 +114,8 @@ export async function getQuotes(symbols) {
 }
 
 const RANGE_DAYS = {
+  '1d': 1,
+  '5d': 5,
   '1mo': 31,
   '3mo': 92,
   '6mo': 183,
@@ -126,13 +128,15 @@ const RANGE_DAYS = {
 
 export async function getHistory(symbol, { range = '1y', interval = '1d' } = {}) {
   if (!RANGE_DAYS[range]) throw new HttpError(400, `Unsupported range "${range}"`);
-  if (!['1d', '1wk', '1mo'].includes(interval)) {
+  if (!['1m', '2m', '5m', '15m', '30m', '60m', '1d', '1wk', '1mo'].includes(interval)) {
     throw new HttpError(400, `Unsupported interval "${interval}"`);
   }
 
+  const intraday = /m$/.test(interval);
+
   return cache.wrap(
     `history:${symbol}:${range}:${interval}`,
-    config.cache.historyTtl,
+    intraday ? config.cache.intradayTtl : config.cache.historyTtl,
     async () => {
       const period1 = new Date(Date.now() - RANGE_DAYS[range] * 86_400_000);
       let raw;
@@ -164,6 +168,30 @@ export async function getHistory(symbol, { range = '1y', interval = '1d' } = {})
       };
     },
   );
+}
+
+/**
+ * Yahoo's predefined stock screener — the live market-wide universe (most
+ * actives, day gainers, growth, value…). Yahoo's payload no longer matches the
+ * library's schema, so validation is skipped and the raw quotes are normalised
+ * through the same path as every other quote.
+ */
+export async function getScreener(scrId, { count = 100 } = {}) {
+  return cache.wrap(`screener:${scrId}:${count}`, 5 * 60_000, async () => {
+    let raw;
+    try {
+      raw = await withRetry(() => yf.screener({ scrIds: scrId, count }, {}, { validateResult: false }));
+    } catch (error) {
+      throw translateError(error, `screener ${scrId}`);
+    }
+    const quotes = (raw?.quotes || []).map(normalizeQuote).filter((quote) => quote?.symbol && quote.price);
+    return {
+      id: scrId,
+      total: num(raw?.total) ?? quotes.length,
+      quotes,
+      fetchedAt: new Date().toISOString(),
+    };
+  });
 }
 
 export async function searchSymbols(query) {

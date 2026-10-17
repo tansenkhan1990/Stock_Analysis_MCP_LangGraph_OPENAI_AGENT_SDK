@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
+import CurrencySwitch from './components/CurrencySwitch.jsx';
+import { useCurrency } from './components/CurrencyProvider.jsx';
 import SearchBox from './components/SearchBox.jsx';
 import { api } from './lib/api.js';
 import AgentPage from './pages/AgentPage.jsx';
 import AnalyzerPage from './pages/AnalyzerPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
+import DayTradePage from './pages/DayTradePage.jsx';
+import HotStocksPage from './pages/HotStocksPage.jsx';
 import FocusPage from './pages/FocusPage.jsx';
 import OptionsLabPage from './pages/OptionsLabPage.jsx';
 
@@ -20,6 +24,8 @@ const parseHash = () => {
 
 const TABS = [
   { id: 'focus', label: 'Focus List', path: '/', icon: '◎' },
+  { id: 'hot', label: 'Hot Stocks', path: '/hot', icon: '⇗' },
+  { id: 'daytrade', label: 'Day Trading', path: '/daytrade/NVDA', icon: '⚡' },
   { id: 'market', label: 'Market', path: '/market', icon: '◧' },
   { id: 'analyze', label: 'Analyzer', path: '/analyze/NVDA', icon: '◔' },
   { id: 'options', label: 'Options Lab', path: '/options/NVDA', icon: '⌁' },
@@ -29,6 +35,7 @@ const TABS = [
 export default function App() {
   const [route, setRoute] = useState(parseHash);
   const [health, setHealth] = useState(null);
+  const { code, rate, live, stale } = useCurrency();
 
   useEffect(() => {
     const onHashChange = () => setRoute(parseHash());
@@ -53,11 +60,17 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
-  const active = ['focus', 'market', 'analyze', 'options', 'agent'].includes(route.page) ? route.page : 'focus';
+  const active = ['focus', 'hot', 'daytrade', 'market', 'analyze', 'options', 'agent'].includes(route.page)
+    ? route.page
+    : 'focus';
   const agentLive = health?.agent?.live;
 
   const page = (() => {
     switch (active) {
+      case 'hot':
+        return <HotStocksPage go={go} />;
+      case 'daytrade':
+        return <DayTradePage symbol={route.param || 'NVDA'} go={go} />;
       case 'analyze':
         return <AnalyzerPage symbol={route.param || 'NVDA'} go={go} />;
       case 'options':
@@ -113,6 +126,7 @@ export default function App() {
 
         <div className="topbar-actions">
           <SearchBox compact onSelect={(symbol) => go(`/analyze/${symbol}`)} placeholder="Ticker…" />
+          <CurrencySwitch />
           <div className={`status-pill ${health?.ok ? 'online' : 'offline'}`} title={health?.agent?.label || 'API status'}>
             <span className="status-dot" />
             <span className="status-text">
@@ -138,6 +152,14 @@ export default function App() {
       <footer className="footer">
         <div>
           <strong>MarketPilot</strong> · Yahoo Finance data · AI research assistant
+          {code !== 'USD' && live && (
+            <span className="fx-note">
+              {' '}
+              · prices in {code} at 1 USD = {rate.toFixed(4)} {code}
+              {stale ? ' (last known rate)' : ''}
+            </span>
+          )}
+          {code !== 'USD' && !live && <span className="fx-note warn"> · live USD→{code} rate unavailable — showing USD</span>}
         </div>
         <div className="footer-note">
           Educational analysis only. Not investment advice. Options involve substantial risk of loss.

@@ -12,13 +12,17 @@ MarketPilot turns live Yahoo Finance data into a transparent, actionable trade p
 | --- | --- |
 | Market dashboard | Index tape (SPY, QQQ, DIA, IWM, VIX, 10Y), sector breadth, risk regime, watchlist, scored signal board |
 | Analyzer | 0–100 multi-factor score, confidence, buy zone, T1/T2/T3 targets, stop, reward:risk, position sizing, candlestick chart with SMA/RSI/volume, level map, fundamentals, news |
-| Options Lab | Live chain, ATM IV, IV vs realised vol, expected move, max pain, put/call ratio, contract-level liquidity, strategy builder with expiry payoff, breakevens, probability of profit and greeks |
-| Options ideas | One-click scan of your watchlist: best defined-risk structure per name (IV state, expected move, credit/debit, max loss, probability of profit) loadable straight into the builder |
+| Options Lab | Live chain, ATM IV, IV vs realised vol, expected move, max pain, put/call ratio, contract-level liquidity, strategy builder with expiry payoff, breakevens, probability of profit and greeks — plus an **AI options desk** at the top that reads the chain, the technical plan and the news, then picks the structure to buy or sell with a thesis, management rule and conviction, loadable into the builder in one click |
+| Options ideas | One-click scan of your watchlist: best defined-risk structure per name (IV state, expected move, credit/debit, max loss, probability of profit) loadable straight into the builder. **Run AI desk** upgrades the scan so the model chooses each structure and explains why |
 | Focus board | Buy & sell signals on your editable focus list, seeded with **NVDA, MSFT, AMZN, GOOGL, PLTR, TSLA, AMD, TSM**, option-tradable ETFs (**SPY, QQQ, IWM, SMH, TLT, GLD**) and the Shariah-screened **ISDW.L** (iShares MSCI World Islamic UCITS ETF, IE00B27YCN58, USD on LSE). Add any other stock or ETF from the search box and remove names with ×. The action is a validated regime rule (buy pullbacks in an uptrend, exit on a trend break), shaped by news, deals, Street actions and earnings risk, with both triggers on every card: **BUY ABOVE** and **SELL BELOW** |
 | Deep research / AI desk | Per-name dossier (price structure, article text, deals, upgrades, earnings risk, option pricing) → BUY / ACCUMULATE / HOLD / REDUCE / SELL with thesis, upside drivers, downside risks, catalysts, invalidation and an options expression. “Run AI desk on all” does the whole board in one pass |
 | AI Agent | Streaming chat with visible tool traces. Tools: full analysis, quote, history, option chain, news, comparison, symbol search, market overview, strategy evaluation |
 | News & deal archive | MongoDB stores every Yahoo Finance headline and business-deal story it sees, plus a daily sentiment digest per symbol. A daily job refreshes the archive; the app reads 7/30-day trends from it |
 | Session state | Watchlist, saved research snapshots and agent threads held in memory for the lifetime of the server |
+| Hot Stocks | A ranked buy-now board over the **live US market**: the Yahoo screens (most actives, day gainers, growth tech, undervalued large caps, small-cap movers) are merged into one **market tape of ~500 names** with live price, day move and relative volume. A heat score decides which names get the full plan — the **buy zone**, the **T1/T2/T3 sell prices** (upside + estimated probability), the stop and reward:risk — and the rest stay on the tape with their quote, so nothing is hidden. **All market / Curated board / My list** scopes and a **40–150 name analysis depth** control the scan; names above the entry band are shown separately with the price to wait for, so the page never tells you to chase |
+| Day Trading | Pick any **US-listed** ticker (09:30–16:00 New York) and get an intraday **BUY / SELL / WAIT** read from 5-minute bars: session VWAP, EMA9 vs EMA20, RSI(14), the 30-minute opening range and relative volume. When a provider is configured the **LLM intraday desk makes the call** (its own entry, stop and 1.5R / 2.5R / 4R targets, with the mechanical read kept beside it), and the page adds the daily regime, headline flow, event risk, option positioning and fundamentals. The chart plots candles, VWAP/EMAs, the opening range, prior close and the trade levels, and the page refreshes every 60 seconds |
+| AI on every buy/sell surface | The model, not just the rule engine, decides the call wherever the app tells you to buy or sell: the **Options Lab** (it picks the structure from the priced candidates or sends its own legs, which are re-priced off the live chain and rejected if the risk is unbounded), the **Day Trading** desk, the **Analyzer** (AI desk call card), the **Focus board** and deep research, plus an on-demand **AI column** on Hot Stocks and the Market dashboard. Model name, latency, cache state and any provider failure are always shown, and every surface falls back to the deterministic engine when there is no key |
+| Display currency | Prices are shown in **EUR** by default, converted from the USD quotes at the live USD→EUR rate; the header switch flips back to native USD and the active rate is printed in the footer. Option strikes, premiums and P/L stay in USD — the US contract convention — while the Options Lab still shows the stock spot in your display currency (USD quote in brackets) |
 
 Supported instruments: US-listed **stocks** and **ETFs**, plus international listings with a Yahoo ticker (e.g. `ISDW.L`), with options where Yahoo provides a chain.
 
@@ -72,6 +76,16 @@ Two different things are reported, on purpose:
 Guardrails downgrade new entries (never below Hold): earnings within 3 days, or news sentiment ≤ −35 across ≥4 headlines. Positive news flow and an improving archived 7-day trend raise conviction. Stocks and ETFs use the same rule; only the quality inputs differ (ETFs get fund quality instead of valuation).
 
 **Two-sided triggers.** Every card carries a long trigger (`BUY ABOVE` — zone ceiling or a breakout capped at ~1.5 ATR) and an exit trigger (`SELL BELOW` — first support beneath spot, or the hard stop on a bearish plan). When an LLM makes the call it may move either level, but a level on the wrong side of spot is rejected and the rule-engine level kept.
+
+**Where the AI decides, and what it is allowed to touch.** Three desk prompts run over real data: the swing desk (Focus, deep research, Analyzer), the intraday desk (Day Trading) and the options desk (Options Lab and the ideas scan). Each one sees a dossier built from live numbers only, returns strict JSON, and is validated before anything reaches the UI:
+
+| Desk | The model decides | Enforced on the way back |
+| --- | --- | --- |
+| Swing (1–8 weeks) | Action, conviction, thesis, catalysts, key levels, both triggers, options expression | Levels on the wrong side of spot are rejected; thesis, conviction and prices are clamped into bounds |
+| Intraday (one session) | BUY / SELL / WAIT, conviction, entry/stop/targets, both triggers, invalidation | Entry must sit within 1% of spot, the stop within 2.5% and on the correct side, targets in the trade's direction, and the exit trigger below spot — otherwise the mechanical plan is used |
+| Options | Which structure to buy or sell (by candidate index or its own legs), bias, PoP, management rule, risks | Every leg is snapped to a real chain contract within 2% of the requested strike and re-priced from the chain; unbounded-risk (naked short) structures are dropped; the bias must match the call |
+
+Decision detail arrives with the call: provider, model, latency, whether it came from cache, and — if the provider failed or no key is set — a plain-language note while the deterministic engine keeps working.
 
 ### Validating the signals (read this before trading them)
 
@@ -205,7 +219,7 @@ A wrong or expired key does not break the app: the header badge stays on the rul
 | --- | --- |
 | `npm run dev` | Run Express + Vite together |
 | `npm run dev:api` / `npm run dev:web` | Run one side only |
-| `npm test` | Node test runner: indicators, scoring/plan engine, alert rule, news analytics, options math |
+| `npm test` | Node test runner: indicators, scoring/plan engine, alert rule, news analytics, options math, hot-stock ranking, day-trade scoring, FX |
 | `npm run build` | Build the React client into `client/dist` |
 | `npm start` | Serve API + built client on `:4000` |
 
@@ -220,6 +234,7 @@ After `npm run build`, `npm start` serves the SPA from Express (single-origin de
 | --- | --- | --- |
 | GET | `/api/health` | Uptime, storage mode, active LLM provider, record counts |
 | GET | `/api/market/overview` | Indices, sectors, breadth, VIX regime |
+| GET | `/api/market/fx` | USD→EUR display rate (live Yahoo `USDEUR=X`, cached 10 min, `USD_EUR_RATE` override) |
 | GET | `/api/market/search?q=apple` | Symbol search |
 | GET | `/api/market/quote/:symbol` | Live quote |
 | GET | `/api/market/history/:symbol?range=1y&interval=1d` | OHLCV bars |
@@ -237,7 +252,8 @@ After `npm run build`, `npm start` serves the SPA from Express (single-origin de
 | Method | Route | Description |
 | --- | --- | --- |
 | GET | `/api/analysis/:symbol?options=1&persist=0&refresh=0` | Full scored analysis + plan + option ideas + news |
-| GET | `/api/scan?symbols=AAPL,NVDA` | Scored signal board (max 24 symbols) |
+| GET | `/api/scan?symbols=AAPL,NVDA` | Scored signal board (48 symbols by default, up to 200) |
+| GET | `/api/hot-stocks?scope=market&depth=100&symbols=AAPL,NVDA&refresh=1` | Hot Stocks board. `market` (default) merges Yahoo's predefined screens into a live market tape (~500 names), fully analyses the hottest `depth` names (default 100, max 150) and returns both the actionable rows and the whole tape; `broad` scans the curated ~40-name board, `focus` only the watchlist, and explicit `symbols` wins over `scope` |
 | GET | `/api/snapshots` | Recent saved research |
 | GET | `/api/snapshots/:symbol` | Latest saved analysis payload |
 
@@ -248,12 +264,18 @@ After `npm run build`, `npm start` serves the SPA from Express (single-origin de
 | GET | `/api/focus/:symbol?ai=1` | Deep research: dossier, headline/deal evidence, decision + option expression (`ai=1` uses the LLM) |
 | POST | `/api/focus/ai` | Desk pass — runs the decision engine (LLM when a key is set, rules otherwise) across the board. Body: `{ "symbols": ["NVDA"], "refresh": false }` |
 
+### Day trading
+| Method | Route | Description |
+| --- | --- | --- |
+| GET | `/api/daytrade/:symbol?refresh=1&ai=1` | Intraday read: 5-minute bars → action, confidence, reasons, entry/stop/targets, session VWAP/EMA/opening-range levels and a two-session chart payload. With a provider configured the LLM desk decides the call (`ai=1` forces it, `ai=0` returns the mechanical read only, cached 10 minutes per symbol and session); the payload also carries the daily regime, news, event risk, option positioning, fundamentals and both reads side by side |
+
 ### Options
 | Method | Route | Description |
 | --- | --- | --- |
 | GET | `/api/options/:symbol/expirations` | Expiry calendar |
 | GET | `/api/options/:symbol/chain?date=YYYY-MM-DD` | Chain + analytics |
-| GET | `/api/options/ideas?symbols=AAPL,SPY` | Best defined-risk structure per symbol (defaults to the watchlist) |
+| GET | `/api/options/:symbol/ai?ai=1` | **AI options desk**: the model's buy/sell call for the chosen expiry, the structure it picked (or its own legs, validated against the live chain), thesis, management rule, PoP, catalysts, risks and invalidation, plus the priced candidates it chose from |
+| GET | `/api/options/ideas?symbols=AAPL,SPY&ai=1` | Best defined-risk structure per symbol (defaults to the watchlist); `ai=1` lets the LLM options desk choose each structure |
 | POST | `/api/options/evaluate` | Payoff/greeks for any leg set |
 
 Example evaluation body:
@@ -311,6 +333,10 @@ Both containers restart unless stopped. The API waits for Mongo's healthcheck be
 │   │   ├── agent/
 │   │   │   ├── agent.js         # loop, system prompt, built-in analyst
 │   │   │   ├── providers.js     # OpenAI / Anthropic / Gemini / Ollama adapters
+│   │   │   ├── llmDecision.js   # swing-trade dossier + decision contract
+│   │   │   ├── symbolDesk.js    # shared, cached desk call for any surface
+│   │   │   ├── intradayDesk.js  # day-trading desk: dossier, validation, merge
+│   │   │   ├── optionsDesk.js   # options desk: candidates, leg validation, defined-risk gate
 │   │   │   └── tools.js         # 9 tool definitions + executors
 │   │   ├── lib/                 # Yahoo client, cache, Mongo connection, in-memory store, errors
 │   │   ├── models/              # Mongoose: NewsItem, DailyNewsDigest
@@ -323,14 +349,15 @@ Both containers restart unless stopped. The API waits for Mongo's healthcheck be
 └── client/
     └── src/
         ├── App.jsx              # hash router + shell
-        ├── pages/               # Dashboard, Analyzer, OptionsLab, Agent
+        ├── pages/               # Focus, Hot Stocks, Day Trading, Dashboard, Analyzer, OptionsLab, Agent
         ├── components/          # candle chart, payoff chart, markdown, search, gauges
         └── styles.css           # dark terminal theme
 ```
 
 ## Reliability notes
 
-- Yahoo calls are cached (quotes 60s, history 5m, chains 3m, analysis 90s, scans 5m), de-duplicated in flight, gated to 4 concurrent requests and retried with backoff on HTTP 429.
+- Yahoo calls are cached (quotes 60s, daily history 5m, intraday bars 60s, chains 3m, analysis 90s, scans 5m, FX 10m), de-duplicated in flight, gated to 4 concurrent requests and retried with backoff on HTTP 429.
+- Currency display is presentation-only: the analytics engine, plans and option math stay in USD. If live FX is unavailable the UI serves the last known rate (or falls back to USD) rather than inventing one.
 - Every analytics function is pure and unit-tested; the live layer degrades gracefully when Yahoo or the LLM is unavailable.
 - Option quotes use the mid, falling back to last price. Always re-check the live bid/ask before sending an order.
 

@@ -44,9 +44,15 @@ export const config = {
     hour: num(process.env.NEWS_INGEST_HOUR, 18),
     retentionDays: num(process.env.NEWS_RETENTION_DAYS, 365),
   },
+  fx: {
+    // Fixed USD→EUR rate for offline use; empty/0 means live Yahoo data.
+    manualRate: Math.max(0, num(process.env.USD_EUR_RATE, 0)),
+    ttlMs: num(process.env.CACHE_TTL_FX, 10 * 60_000),
+  },
   cache: {
     quoteTtl: num(process.env.CACHE_TTL_QUOTE, 60_000),
     historyTtl: num(process.env.CACHE_TTL_HISTORY, 5 * 60_000),
+    intradayTtl: num(process.env.CACHE_TTL_INTRADAY, 60_000),
     optionsTtl: num(process.env.CACHE_TTL_OPTIONS, 3 * 60_000),
     analysisTtl: num(process.env.CACHE_TTL_ANALYSIS, 90_000),
     scanTtl: num(process.env.CACHE_TTL_SCAN, 5 * 60_000),

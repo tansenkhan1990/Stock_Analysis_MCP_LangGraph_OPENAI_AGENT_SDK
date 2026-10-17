@@ -3,7 +3,7 @@ import Markdown from '../components/Markdown.jsx';
 import SearchBox from '../components/SearchBox.jsx';
 import Stat from '../components/Stat.jsx';
 import { api } from '../lib/api.js';
-import { money, num, pct, shortDate, timeAgo, toneForChange } from '../lib/format.js';
+import { money, num, pct, shortDate, timeAgo, toneForChange, usd } from '../lib/format.js';
 
 const ACTION_CLASS = {
   buy: 'action-buy',
@@ -145,6 +145,7 @@ function DecisionPanel({ research, onClose, onOpenAnalyzer, onOpenOptions }) {
             <span className="eyebrow">OPTIONS EXPRESSION</span>
             <strong>{decision.optionsIdea.name}</strong>
             {decision.optionsIdea.expiration && <span className="muted small">exp {decision.optionsIdea.expiration}</span>}
+            <span className="muted small">· legs &amp; P/L in USD</span>
           </div>
           <div className="leg-list">
             {(decision.optionsIdea.legs || []).map((leg, index) => (
@@ -154,7 +155,7 @@ function DecisionPanel({ research, onClose, onOpenAnalyzer, onOpenOptions }) {
             ))}
           </div>
           <div className="option-idea-metrics">
-            <Stat label="Max loss" value={decision.optionsIdea.maxLoss ? money(decision.optionsIdea.maxLoss, 0) : '—'} tone="down" />
+            <Stat label="Max loss" value={decision.optionsIdea.maxLoss ? usd(decision.optionsIdea.maxLoss, 0) : '—'} tone="down" />
             <Stat
               label="Est. PoP"
               value={decision.optionsIdea.probabilityOfProfit !== null ? `${decision.optionsIdea.probabilityOfProfit}%` : '—'}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Markdown from '../components/Markdown.jsx';
 import { api } from '../lib/api.js';
+import { convertMoneyText } from '../lib/currency.js';
 import { timeAgo } from '../lib/format.js';
 
 const TOOL_LABELS = {
@@ -276,7 +277,9 @@ export default function AgentPage({ go, health }) {
                             <span className="tool-dot" />
                             <span>{TOOL_LABELS[tool.name] || tool.name}</span>
                             {tool.status === 'running' && <span className="tool-running">running…</span>}
-                            {tool.status === 'done' && tool.summary && <span className="tool-summary">{tool.summary}</span>}
+                            {tool.status === 'done' && tool.summary && (
+                              <span className="tool-summary">{convertMoneyText(tool.summary)}</span>
+                            )}
                             {tool.status === 'error' && <span className="tool-summary">failed</span>}
                           </div>
                         ))}

@@ -11,6 +11,7 @@ import { stats } from './lib/store.js';
 import { newsArchiveStats } from './services/newsHistoryService.js';
 import { agentRouter } from './routes/agent.js';
 import { analysisRouter } from './routes/analysis.js';
+import { dayTradeRouter } from './routes/dayTrade.js';
 import { focusRouter } from './routes/focus.js';
 import { marketRouter } from './routes/market.js';
 import { newsRouter } from './routes/news.js';
@@ -51,6 +52,7 @@ app.use('/api/news', newsRouter);
 app.use('/api/focus', focusRouter);
 app.use('/api', analysisRouter);
 app.use('/api/options', optionsRouter);
+app.use('/api/daytrade', dayTradeRouter);
 app.use('/api/watchlist', watchlistRouter);
 app.use('/api/agent', agentRouter);
 

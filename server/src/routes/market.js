@@ -1,9 +1,17 @@
 import { Router } from 'express';
 import { getHistory, getQuote, searchSymbols } from '../lib/yahoo.js';
 import { asyncHandler, normalizeSymbol } from '../lib/errors.js';
+import { getUsdEurRate } from '../services/fxService.js';
 import { getMarketOverview } from '../services/marketService.js';
 
 export const marketRouter = Router();
+
+marketRouter.get(
+  '/fx',
+  asyncHandler(async (req, res) => {
+    res.json(await getUsdEurRate());
+  }),
+);
 
 marketRouter.get(
   '/overview',

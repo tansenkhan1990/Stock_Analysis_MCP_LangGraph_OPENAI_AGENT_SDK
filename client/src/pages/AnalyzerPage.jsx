@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import CandleChart from '../components/CandleChart.jsx';
+import { useCurrency } from '../components/CurrencyProvider.jsx';
 import PayoffChart from '../components/PayoffChart.jsx';
 import ScoreRing from '../components/ScoreRing.jsx';
 import SearchBox from '../components/SearchBox.jsx';
 import { api } from '../lib/api.js';
 import {
   bigNumber,
+  compact,
   money,
   num,
   pct,
@@ -13,6 +15,7 @@ import {
   shortDate,
   timeAgo,
   toneForChange,
+  usd,
 } from '../lib/format.js';
 
 const ScoreBar = ({ component }) => {
@@ -92,6 +95,7 @@ function TargetLadder({ analysis }) {
 }
 
 export default function AnalyzerPage({ symbol, go }) {
+  const { code, rate, live } = useCurrency();
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -101,6 +105,9 @@ export default function AnalyzerPage({ symbol, go }) {
   const [showSma, setShowSma] = useState(true);
   const [showRsi, setShowRsi] = useState(true);
   const [optionIndex, setOptionIndex] = useState(0);
+  // The LLM desk call for this symbol (same model + cache as the Focus board).
+  const [aiCall, setAiCall] = useState(null);
+  const [aiCallError, setAiCallError] = useState('');
 
   const load = useCallback(
     async (refresh = false) => {
@@ -126,6 +133,23 @@ export default function AnalyzerPage({ symbol, go }) {
   useEffect(() => {
     load(false);
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAiCall(null);
+    setAiCallError('');
+    api
+      .research(symbol, { ai: true })
+      .then((data) => {
+        if (!cancelled) setAiCall(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setAiCallError(err.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol]);
 
   const save = async () => {
     setSaving(true);
@@ -173,6 +197,8 @@ export default function AnalyzerPage({ symbol, go }) {
   const optionPlans = options?.plans || [];
   const activePlan = optionPlans[optionIndex];
   const rangePosition = levels.rangePosition ?? 50;
+  const aiDecision = aiCall?.decision || null;
+  const aiLive = Boolean(aiCall?.decisionMeta && aiCall.decisionMeta.provider !== 'rule-engine');
 
   return (
     <div className="page analyzer">
@@ -208,7 +234,13 @@ export default function AnalyzerPage({ symbol, go }) {
           <div className="quote-tags">
             {fundamentals?.sector && <span>{fundamentals.sector}</span>}
             {fundamentals?.industry && <span>{fundamentals.industry}</span>}
-            {analysis.quote?.averageVolume && <span>Avg vol {bigNumber(analysis.quote.averageVolume)}</span>}
+            {analysis.quote?.averageVolume && <span>Avg vol {compact(analysis.quote.averageVolume)}</span>}
+            {code !== 'USD' && live && (
+              <span className="fx-source">
+                {code} at 1 USD = {rate.toFixed(4)} {code} (live FX)
+              </span>
+            )}
+            {code !== 'USD' && !live && <span className="fx-source warn">live FX unavailable — prices in USD</span>}
             <span>Updated {timeAgo(analysis.generatedAt)}</span>
           </div>
         </div>
@@ -216,7 +248,7 @@ export default function AnalyzerPage({ symbol, go }) {
           <div className="quote-price">{money(analysis.price)}</div>
           <div className={`quote-change ${toneForChange(analysis.changePercent)}`}>
             {analysis.change > 0 ? '+' : ''}
-            {num(analysis.change)} ({pct(analysis.changePercent)})
+            {money(Math.abs(analysis.change))} ({pct(analysis.changePercent)})
           </div>
           <div className="quote-range">
             <span>52w</span>
@@ -230,6 +262,124 @@ export default function AnalyzerPage({ symbol, go }) {
           </div>
         </div>
       </section>
+
+      {aiDecision ? (
+        <section className={`panel ai-call-panel ${aiDecision.action}`}>
+          <div className="panel-head">
+            <div>
+              <div className="eyebrow">{aiLive ? 'AI DESK CALL' : 'ENGINE CALL'}</div>
+              <h2>
+                {aiDecision.actionLabel} · {aiDecision.conviction}% conviction
+              </h2>
+            </div>
+            <div className="chip-row">
+              <span className={`chip ${aiLive ? 'ai' : ''}`}>
+                {aiLive
+                  ? `${aiCall.decisionMeta.provider} · ${aiCall.decisionMeta.model}`
+                  : 'MarketPilot rule engine'}
+              </span>
+              {aiCall.decisionMeta?.cached && <span className="chip">cached</span>}
+              {aiCall.decisionMeta?.latencyMs ? (
+                <span className="chip">{(aiCall.decisionMeta.latencyMs / 1000).toFixed(1)}s</span>
+              ) : null}
+              {aiDecision.alertDisagrees && (
+                <span className="chip warn">engine alert says {aiCall.alert?.actionLabel || aiDecision.alertAction}</span>
+              )}
+              <span className="chip">{aiDecision.horizon}</span>
+            </div>
+          </div>
+
+          <div className="ai-call-grid">
+            <div className="ai-call-copy">
+              <p className="day-ai-thesis">{aiDecision.thesis}</p>
+              <div className="ai-call-columns">
+                <div>
+                  <h3>Upside drivers</h3>
+                  <ul className="day-ai-list">
+                    {(aiDecision.upsideDrivers || []).map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <h3>Downside risks</h3>
+                  <ul className="risk-list tight">
+                    {(aiDecision.downsideRisks || []).map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              {aiDecision.invalidations?.length > 0 && (
+                <ul className="context-list">
+                  {aiDecision.invalidations.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              )}
+              {aiDecision.whatWouldChangeMyMind && (
+                <p className="option-note">Would change the call: {aiDecision.whatWouldChangeMyMind}</p>
+              )}
+            </div>
+
+            <div className="ai-call-side">
+              <div className="day-level-grid">
+                <Stat label="Entry" value={money(aiDecision.keyLevels?.entry)} />
+                <Stat label="Target" value={money(aiDecision.keyLevels?.target)} tone="up" />
+                <Stat label="Stop" value={money(aiDecision.keyLevels?.stop)} tone="down" />
+                <Stat label="Buy above" value={money(aiDecision.triggers?.buyAbove)} tone="up" />
+                <Stat label="Sell below" value={money(aiDecision.triggers?.sellBelow)} tone="down" />
+              </div>
+
+              {aiDecision.catalysts?.length > 0 && (
+                <div className="day-catalysts">
+                  {aiDecision.catalysts.slice(0, 5).map((catalyst, index) => (
+                    <div key={`${catalyst.detail}-${index}`} className={`catalyst ${catalyst.direction}`}>
+                      <span className="catalyst-tag">{catalyst.type}</span>
+                      <span>{catalyst.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {aiDecision.optionsIdea && (
+                <div className="ai-options-idea">
+                  <div className="eyebrow">OPTIONS EXPRESSION</div>
+                  <strong>{aiDecision.optionsIdea.name}</strong>
+                  {aiDecision.optionsIdea.legs?.length > 0 && (
+                    <ul className="context-list">
+                      {aiDecision.optionsIdea.legs.map((leg) => (
+                        <li key={leg}>{leg}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="option-note">
+                    {aiDecision.optionsIdea.maxLoss ? `Max loss ${usd(aiDecision.optionsIdea.maxLoss, 0)}` : ''}
+                    {aiDecision.optionsIdea.probabilityOfProfit !== null &&
+                    aiDecision.optionsIdea.probabilityOfProfit !== undefined
+                      ? ` · ${aiDecision.optionsIdea.probabilityOfProfit}% est. PoP`
+                      : ''}
+                  </p>
+                  <button type="button" className="btn btn-mini wide" onClick={() => go(`/options/${symbol}`)}>
+                    Open in Options Lab
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {aiCall.decisionError && <div className="alert alert-info tiny">{aiCall.decisionError}</div>}
+        </section>
+      ) : (
+        <section className="panel ai-call-panel">
+          <div className="eyebrow">AI DESK CALL</div>
+          <p className="muted small">
+            Running the model over the technical plan, news flow, deals, Street activity, event risk and the option chain…
+          </p>
+        </section>
+      )}
+
+      {aiCallError && <div className="alert alert-info">AI desk call unavailable — {aiCallError}</div>}
 
       <div className="analyzer-grid">
         <div className="analyzer-main">
@@ -290,7 +440,7 @@ export default function AnalyzerPage({ symbol, go }) {
                 <span className="plan-foot">{plan.invalidation}</span>
               </div>
               <div className="plan-card">
-                <span className="plan-label">1% risk sizing ($10k)</span>
+                <span className="plan-label">1% risk sizing (≈{money(10000, 0)})</span>
                 <strong className="plan-value">
                   {plan.riskBudgetExample?.shares ?? '—'} <span className="unit">shares</span>
                 </strong>
@@ -408,7 +558,7 @@ export default function AnalyzerPage({ symbol, go }) {
                 <Stat label="ATM IV" value={`${options.summary.atmIv ?? '—'}%`} tone={options.summary.ivState === 'rich' ? 'down' : 'up'} hint="At-the-money implied volatility" />
                 <Stat label="IV vs RV" value={`${options.summary.ivPremium ?? '—'}×`} hint={`${options.summary.ivState} vs 20d realised volatility`} />
                 <Stat label="Expected move" value={`±${options.summary.expectedMovePct ?? '—'}%`} hint="One standard deviation to expiry" />
-                <Stat label="Max pain" value={money(options.summary.maxPain, 0)} />
+                <Stat label="Max pain" value={usd(options.summary.maxPain, 0)} />
                 <Stat label="Put/Call OI" value={num(options.summary.pcrOi)} />
               </div>
             )}
@@ -435,20 +585,24 @@ export default function AnalyzerPage({ symbol, go }) {
                         {activePlan.legs.map((leg, index) => (
                           <div key={index} className="leg-chip">
                             <span className={`leg-action ${leg.action}`}>{leg.action}</span>
-                            <span>{leg.kind === 'stock' ? '100 shares' : `${leg.kind} ${money(leg.strike, 0)}`}</span>
-                            {leg.kind !== 'stock' && <span className="mono muted">@ {money(leg.premium)}</span>}
+                            <span>{leg.kind === 'stock' ? '100 shares' : `${leg.kind} ${usd(leg.strike, 0)}`}</span>
+                            {leg.kind !== 'stock' && <span className="mono muted">@ {usd(leg.premium)}</span>}
                           </div>
                         ))}
                       </div>
                       <div className="option-metrics">
-                        <Stat label={activePlan.metrics.isCredit ? 'Net credit' : 'Net debit'} value={money(Math.abs(activePlan.metrics.netPremium), 0)} />
-                        <Stat label="Max profit" value={activePlan.metrics.maxProfitUnbounded ? 'Unlimited' : money(activePlan.metrics.maxProfit, 0)} tone="up" />
-                        <Stat label="Max loss" value={money(Math.abs(activePlan.metrics.maxLoss), 0)} tone="down" />
-                        <Stat label="Breakeven" value={activePlan.metrics.breakevens.map((value) => money(value)).join(' / ') || '—'} />
+                        <Stat label={activePlan.metrics.isCredit ? 'Net credit' : 'Net debit'} value={usd(Math.abs(activePlan.metrics.netPremium), 0)} />
+                        <Stat label="Max profit" value={activePlan.metrics.maxProfitUnbounded ? 'Unlimited' : usd(activePlan.metrics.maxProfit, 0)} tone="up" />
+                        <Stat label="Max loss" value={usd(Math.abs(activePlan.metrics.maxLoss), 0)} tone="down" />
+                        <Stat label="Breakeven" value={activePlan.metrics.breakevens.map((value) => usd(value)).join(' / ') || '—'} />
                         <Stat label="Est. PoP" value={`${activePlan.metrics.probabilityOfProfit ?? '—'}%`} />
                         <Stat label="Delta" value={num(activePlan.metrics.greeks.delta, 2)} />
                       </div>
                       <div className="option-note">{activePlan.riskNote}</div>
+                      <div className="fx-source option-fx-note">
+                        This options block is quoted in USD (US exchange): legs, strikes and P/L. The stock plan above uses{' '}
+                        {code === 'USD' || !live ? 'USD' : code}.
+                      </div>
                     </div>
                     <div className="option-plan-chart">
                       <PayoffChart
@@ -456,6 +610,7 @@ export default function AnalyzerPage({ symbol, go }) {
                         breakevens={activePlan.metrics.breakevens}
                         spot={analysis.price}
                         height={220}
+                        nativeCurrency
                       />
                     </div>
                   </div>

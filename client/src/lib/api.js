@@ -31,6 +31,7 @@ export const api = {
   health: () => request('/health'),
   overview: () => request('/market/overview'),
   search: (q) => request(`/market/search${qs({ q })}`),
+  fx: () => request('/market/fx'),
   quote: (symbol) => request(`/market/quote/${symbol}`),
   history: (symbol, range = '1y', interval = '1d') =>
     request(`/market/history/${symbol}${qs({ range, interval })}`),
@@ -44,14 +45,34 @@ export const api = {
       body: JSON.stringify({ symbols, refresh }),
     }),
 
+  dayTrade: (symbol, { refresh = false, ai } = {}) =>
+    request(`/daytrade/${symbol}${qs({ refresh: refresh ? 1 : undefined, ai: ai === undefined ? undefined : ai ? 1 : 0 })}`),
   analysis: (symbol, { options = true, persist = false, refresh = false } = {}) =>
     request(`/analysis/${symbol}${qs({ options: options ? 1 : 0, persist: persist ? 1 : 0, refresh: refresh ? 1 : 0 })}`),
   scan: (symbols) => request(`/scan${qs({ symbols: Array.isArray(symbols) ? symbols.join(',') : symbols })}`),
+  hotStocks: ({ symbols, limit, scope, depth, refresh = false } = {}) =>
+    request(
+      `/hot-stocks${qs({
+        symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+        limit,
+        scope,
+        depth,
+        refresh: refresh ? 1 : undefined,
+      })}`,
+    ),
   snapshots: (limit = 20) => request(`/snapshots${qs({ limit })}`),
 
-  optionsIdeas: (symbols) => request(`/options/ideas${qs({ symbols: Array.isArray(symbols) ? symbols.join(',') : symbols })}`),
+  optionsIdeas: (symbols, { ai = false } = {}) =>
+    request(
+      `/options/ideas${qs({
+        symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+        ai: ai ? 1 : undefined,
+      })}`,
+    ),
   expirations: (symbol) => request(`/options/${symbol}/expirations`),
   chain: (symbol, date) => request(`/options/${symbol}/chain${qs({ date })}`),
+  optionsDesk: (symbol, { date, refresh = false } = {}) =>
+    request(`/options/${symbol}/ai${qs({ date, refresh: refresh ? 1 : undefined })}`),
   evaluate: (payload) =>
     request('/options/evaluate', { method: 'POST', body: JSON.stringify(payload) }),
 

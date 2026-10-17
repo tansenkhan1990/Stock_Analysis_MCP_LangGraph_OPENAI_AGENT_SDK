@@ -3,9 +3,16 @@ import { evaluateStrategy } from '../analytics/options.js';
 import { asyncHandler, badRequest, normalizeSymbol } from '../lib/errors.js';
 import { getExpirations, getQuote } from '../lib/yahoo.js';
 import { seedWatchlist } from '../lib/store.js';
-import { getChainWithAnalytics, getOptionsIdeas } from '../services/analysisService.js';
+import { getChainWithAnalytics, getOptionsDesk, getOptionsIdeas } from '../services/analysisService.js';
 
 export const optionsRouter = Router();
+
+/** `ai=1` / `ai=0` forces or disables the LLM desk; omitted = auto (key present). */
+const parseAi = (value) => {
+  if (value === '1' || value === 'true') return true;
+  if (value === '0' || value === 'false') return false;
+  return undefined;
+};
 
 optionsRouter.get(
   '/ideas',
@@ -18,7 +25,7 @@ optionsRouter.get(
       const watchlist = await seedWatchlist();
       symbols = watchlist.map((item) => item.symbol);
     }
-    res.json(await getOptionsIdeas(symbols));
+    res.json(await getOptionsIdeas(symbols, { ai: parseAi(req.query.ai) }));
   }),
 );
 
@@ -27,6 +34,22 @@ optionsRouter.get(
   asyncHandler(async (req, res) => {
     const symbol = normalizeSymbol(req.params.symbol);
     res.json(await getExpirations(symbol));
+  }),
+);
+
+optionsRouter.get(
+  '/:symbol/ai',
+  asyncHandler(async (req, res) => {
+    const symbol = normalizeSymbol(req.params.symbol);
+    const date = req.query.date ? String(req.query.date) : null;
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw badRequest('date must be YYYY-MM-DD');
+    res.json(
+      await getOptionsDesk(symbol, {
+        ai: parseAi(req.query.ai),
+        refresh: req.query.refresh === '1',
+        expiration: date,
+      }),
+    );
   }),
 );
 

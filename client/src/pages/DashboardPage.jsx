@@ -24,6 +24,10 @@ export default function DashboardPage({ go }) {
   const [error, setError] = useState('');
   const [addError, setAddError] = useState('');
   const [busySymbol, setBusySymbol] = useState('');
+  // LLM desk verdicts for the scan table, fetched on demand (one call per name).
+  const [aiDecisions, setAiDecisions] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -84,6 +88,23 @@ export default function DashboardPage({ go }) {
 
   const indices = overview?.indices || [];
   const signals = scan?.signals || [];
+  const aiUniverse = signals.slice(0, 20).map((signal) => signal.symbol);
+  const aiMeta =
+    aiDecisions && Object.values(aiDecisions).find((entry) => entry?.decisionMeta?.provider !== 'rule-engine')?.decisionMeta;
+
+  const runAiDesk = async () => {
+    if (!aiUniverse.length) return;
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const payload = await api.deskAi({ symbols: aiUniverse });
+      setAiDecisions(payload.decisions || {});
+    } catch (err) {
+      setAiError(err.message);
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   return (
     <div className="page dashboard">
@@ -97,6 +118,15 @@ export default function DashboardPage({ go }) {
         </div>
         <div className="head-actions">
           {overview?.asOf && <span className="meta-time">Updated {timeAgo(overview.asOf)}</span>}
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={runAiDesk}
+            disabled={aiLoading || loading || !aiUniverse.length}
+            title={`Run the LLM desk call on the top ${aiUniverse.length} names (one model call each, cached 30 minutes)`}
+          >
+            <span className={aiLoading ? 'spin' : ''}>✦</span> {aiLoading ? 'AI desk running…' : 'Run AI desk'}
+          </button>
           <button type="button" className="btn btn-ghost" onClick={() => load(true)} disabled={refreshing}>
             <span className={refreshing ? 'spin' : ''}>↻</span> Refresh
           </button>
@@ -261,6 +291,7 @@ export default function DashboardPage({ go }) {
                   <th>Day</th>
                   <th>Score</th>
                   <th>Verdict</th>
+                  <th title="LLM desk call — run the AI pass to fill this column">AI</th>
                   <th>Buy zone</th>
                   <th>Sell targets</th>
                   <th>Stop</th>
@@ -285,6 +316,23 @@ export default function DashboardPage({ go }) {
                     </td>
                     <td>
                       <span className={`signal-pill ${signal.action}`}>{signal.actionLabel}</span>
+                    </td>
+                    <td>
+                      {aiDecisions?.[signal.symbol]?.decision ? (
+                        <span className="ai-cell">
+                          <span className={`signal-pill ${aiDecisions[signal.symbol].decision.action}`}>
+                            {aiDecisions[signal.symbol].decision.actionLabel}
+                          </span>
+                          <span className="muted small">{aiDecisions[signal.symbol].decision.conviction}%</span>
+                          {aiDecisions[signal.symbol].decision.action !== signal.action && (
+                            <span className="chip warn" title={`Conflicts with the mechanical call: engine says ${signal.actionLabel}`}>
+                              ≠ engine
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="muted small">{aiDecisions ? '—' : 'not run'}</span>
+                      )}
                     </td>
                     <td className="mono">
                       {signal.buyZone ? `${money(signal.buyZone.low, 0)}–${money(signal.buyZone.high, 0)}` : <span className="muted">wait</span>}
@@ -321,6 +369,14 @@ export default function DashboardPage({ go }) {
             </table>
           </div>
         )}
+
+        {aiDecisions && (
+          <div className="alert alert-success tiny">
+            AI desk reviewed {Object.keys(aiDecisions).length} names
+            {aiMeta ? ` · ${aiMeta.provider} · ${aiMeta.model}` : ' — no LLM key configured, so the AI column shows the engine call'}.
+          </div>
+        )}
+        {aiError && <div className="alert alert-error">AI desk failed — {aiError}</div>}
       </section>
 
       <div className="dashboard-grid bottom-grid">
