@@ -1,0 +1,48 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: marketpilot-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: marketpilot-api
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongo:27017/marketpilot
+      MONGODB_DB: marketpilot
+      # Daily news/deal archive: runs shortly after boot, then once a day
+      # after this local hour.
+      NEWS_INGEST_ENABLED: "true"
+      NEWS_INGEST_ON_BOOT: "true"
+      NEWS_INGEST_HOUR: "18"
+      # Optional LLM keys — pass them through from your shell/.env
+      LLM_PROVIDER: ${LLM_PROVIDER:-auto}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+
+volumes:
+  mongo-data:

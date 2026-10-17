@@ -1,0 +1,20 @@
+{
+  "name": "marketpilot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI-powered stock & ETF analyzer with options strategy lab",
+  "scripts": {
+    "install:all": "npm install && npm --prefix server install && npm --prefix client install",
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "dev:api": "npm --prefix server run dev",
+    "dev:web": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "start": "npm --prefix server start",
+    "test": "npm --prefix server test",
+    "validate": "npm --prefix server run validate",
+    "ingest": "npm --prefix server run ingest"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
