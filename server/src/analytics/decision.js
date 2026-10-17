@@ -62,36 +62,120 @@ export function tradeTriggers({ analysis }) {
     inBuyZone ? Math.max(plan.buyZone.high, price * 1.0005) : Math.max(breakout, price * 1.001),
   );
 
-  // The exit trigger must sit BELOW spot even on bearish names, where the
-  // "sell" side is a support break rather than the trim zone overhead.
+  const side = plan.direction || 'long';
+
+  // The lower trigger has two different jobs, and conflating them printed a
+  // losing trade on the card:
+  //  - on a long it is the EXIT (a protective stop below the buy band), so a
+  //    long card legitimately shows a "sell" price under its buy price;
+  //  - on a short it is the ENTRY (a breakdown trigger), and that entry must
+  //    sit ABOVE the first profit target — otherwise the card says "short at
+  //    374.69" next to "target 376.24", i.e. sell below your own target.
   const hardStop = plan.stopLoss < price ? plan.stopLoss : price - atr * 1.2;
-  const supportTrigger = supportBelow && supportBelow > price * 0.9 ? supportBelow : hardStop;
-  const sellBelow = round(Math.min(price * 0.999, Math.max(supportTrigger, hardStop)));
+  // On the long side the exit must also sit clear of the whole accumulation
+  // range. A support break at or inside that range is not an exit: it would
+  // print "sell below" at a price the card still tells you to buy (the range
+  // floor is itself built from the nearest support), which reads as selling
+  // under your own entry. In that case the planned stop — always below the
+  // range — is the exit level.
+  const zoneFloor = Number.isFinite(plan.buyZone?.low) ? plan.buyZone.low : null;
+  const supportUsable =
+    supportBelow !== null && supportBelow > price * 0.9 && (zoneFloor === null || supportBelow < zoneFloor);
+  const supportTrigger = supportUsable ? supportBelow : hardStop;
+  const exitLevel = Math.min(price * 0.999, Math.max(supportTrigger, hardStop));
+
+  // The nearest short target (T1) is the highest of the downside targets. A
+  // breakdown entry halfway between spot and T1 leaves room to T1 while staying
+  // close enough to be actionable; the buffer stops the two from converging.
+  const firstTarget = (plan.targets || [])
+    .map((target) => target?.price)
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0] ?? null;
+  const buffer = Math.max(atr * 0.15, price * 0.002);
+  const targetRoom = firstTarget !== null && firstTarget < price ? price - firstTarget : null;
+  const shortEntry =
+    targetRoom !== null ? Math.max(firstTarget + buffer, price - targetRoom * 0.5) : price * 0.999;
+
+  const sellBelow = round(side === 'short' ? Math.min(price * 0.999, shortEntry) : exitLevel);
+  const exitIsStop = side !== 'short' && sellBelow === round(plan.stopLoss);
+  const sellSource =
+    side === 'short'
+      ? firstTarget !== null && sellBelow > firstTarget
+        ? ' (above T1)'
+        : ''
+      : exitIsStop
+        ? ' (the planned stop)'
+        : supportUsable && sellBelow === round(supportBelow)
+          ? ' (support break)'
+          : '';
 
   const inSellZone = Boolean(plan.shortZone && price >= plan.shortZone.low && price <= plan.shortZone.high);
   const trimAbove = plan.shortZone && plan.shortZone.low > price ? round(plan.shortZone.low) : null;
 
-  const side = plan.direction || 'long';
+  // Labels are part of the contract, not cosmetics. Printing a long's
+  // protective stop as "sell below" made the card read as "buy here, sell
+  // lower" — a guaranteed loss — when the number is the exit that caps the
+  // loss. The two sides are named by what they do to the position.
+  // The call matters too: on a Reduce/Sell card the upper level is not an
+  // entry, it is the price that would cancel the exit call.
+  const callAction = analysis?.alert?.action ?? null;
+  const exitCall = callAction === 'reduce' || callAction === 'sell';
+  const buyLabel = side === 'short' ? 'STOP ABOVE' : exitCall ? 'RECLAIM ABOVE' : 'BUY ABOVE';
+  const sellLabel = side === 'short' ? 'BREAKDOWN BELOW' : 'EXIT BELOW';
+  const buyHint =
+    side === 'short'
+      ? `A close above this level cancels the bearish setup — an early stop, not a target (hard stop ${round(plan.stopLoss)})`
+      : exitCall
+        ? 'A close back above this level would cancel the exit call — it is not a buy signal today'
+        : inBuyZone
+          ? 'Breakout confirmation above the buy zone'
+          : 'Long confirmation: this price must print before the long is triggered';
+  const sellHint =
+    side === 'short'
+      ? `A close below this confirms the downtrend; the call is an exit, not a short recommendation. Profit targets (T1 ${round(firstTarget)}) sit below it, stop above ${round(plan.stopLoss)}`
+      : exitIsStop
+        ? 'Protective stop-loss exit, not a sell target — the profit targets are above spot'
+        : 'Exit on weakness, not a sell target — the profit targets are above spot';
 
   return {
     buyAbove,
     sellBelow,
+    buyLabel,
+    sellLabel,
+    buyHint,
+    sellHint,
     trimAbove,
     side,
+    // The nearest downside target. Only a short has one below spot, and there
+    // it also bounds the entry: the breakdown level must sit above it or the
+    // trade has no reward left.
+    firstTarget: side === 'short' ? round(firstTarget) : null,
     stop: round(plan.stopLoss),
     inBuyZone,
     extendedAboveZone,
     inSellZone,
+    // True when the exit level IS the planned stop (no earlier support break),
+    // so surfaces can word the line as a stop rather than a signal.
+    exitIsStop,
+    // The note must describe the level actually returned: while price sits
+    // inside the zone, `buyAbove` is the breakout confirmation (not the zone
+    // floor), so buying at spot is valid and no breakout is required.
     buyNote: inBuyZone
-      ? `Price is already inside the buy zone — trigger is a hold above ${round(plan.buyZone.low)}`
+      ? `Price is already inside the ${round(plan.buyZone.low)}–${round(plan.buyZone.high)} buy zone — accumulate here; a break above ${buyAbove} would confirm strength`
       : extendedAboveZone
         ? `Extended above the ${round(plan.buyZone.low)}–${round(plan.buyZone.high)} buy zone — break above ${buyAbove} or wait for a pullback into the zone`
         : `Long trigger: reclaim / break above ${buyAbove}${resistanceAbove ? ' (nearest resistance)' : ' (ATR breakout)'}`,
     sellNote: inSellZone
-      ? `Trim into ${round(plan.shortZone.low)}–${round(plan.shortZone.high)}; exit on a close below ${sellBelow} — hard stop ${round(plan.stopLoss)}`
+      ? side === 'short'
+        ? `Price is inside the ${round(plan.shortZone.low)}–${round(plan.shortZone.high)} supply zone — trim into strength; a close below ${sellBelow} confirms the weakness, and a close above ${round(plan.stopLoss)} cancels the bearish read`
+        : `Trim into ${round(plan.shortZone.low)}–${round(plan.shortZone.high)}; exit on a close below ${sellBelow} — hard stop ${round(plan.stopLoss)}`
       : side === 'short'
-        ? `Breakdown trigger: a close below ${sellBelow}${supportBelow && sellBelow === round(supportBelow) ? ' (support)' : ''} — short stop above ${round(plan.stopLoss)}`
-        : `Exit trigger: a close below ${sellBelow}${supportBelow && sellBelow === round(supportBelow) ? ' (support)' : ''} — hard stop ${round(plan.stopLoss)}`,
+        ? `A close below ${sellBelow}${sellSource} confirms the breakdown — first downside level ${round(firstTarget)}, and a close above ${round(plan.stopLoss)} cancels the bearish read`
+        : `Exit trigger: a close below ${sellBelow}${sellSource}${exitIsStop ? '' : ` — hard stop ${round(plan.stopLoss)}`}`,
+    // True when the "sell" side is the exit for a long (below the entry band),
+    // not a breakdown entry for a short — the two read very differently, so
+    // every surface labels them apart.
+    exitSide: side !== 'short',
     distanceToBuyPct: round(((buyAbove - price) / price) * 100, 2),
     distanceToSellPct: round(((sellBelow - price) / price) * 100, 2),
   };
@@ -255,6 +339,10 @@ export function builtinDecision({ symbol, meta, analysis, news, newsHistory = nu
   // No alert means no usable price/structure, so there is nothing to act on.
   const action = alert?.action ?? 'hold';
   const bestPlan = pickPlanForAction(options?.plans, action);
+  // The level that would flip a bearish call is above spot (the short stop),
+  // not one of its downside targets.
+  const reversalLevel =
+    plan.direction === 'short' ? plan.stopLoss : plan.targets?.[0]?.price ?? analysis.price;
 
   return {
     action,
@@ -265,7 +353,7 @@ export function builtinDecision({ symbol, meta, analysis, news, newsHistory = nu
     setupNote: alert?.setupNote ?? null,
     alert,
     horizon: plan.horizon,
-    thesis: `${alert?.reason ? `${alert.reason} ` : ''}Fused quality is ${combined.score}/100 with a Street tilt of ${combined.analystTilt} from ${analyst?.upgrades ?? 0} upgrades / ${analyst?.downgrades ?? 0} downgrades. That mix supports ${actionPhrase[action]} around ${round(entry)} with a ${round(plan.stopLoss)} stop${target ? ` and ${round(target)} as the primary objective` : ''}.`,
+    thesis: `${alert?.reason ? `${alert.reason} ` : ''}Fused quality is ${combined.score}/100 with a Street tilt of ${combined.analystTilt} from ${analyst?.upgrades ?? 0} upgrades / ${analyst?.downgrades ?? 0} downgrades. That mix supports ${actionPhrase[action]} around ${round(entry)} with a ${round(plan.stopLoss)} stop${target ? ` and ${round(target)} as the main target (T2)` : ''}.`,
     upsideDrivers,
     downsideRisks,
     catalysts,
@@ -294,7 +382,7 @@ export function builtinDecision({ symbol, meta, analysis, news, newsHistory = nu
     whatWouldChangeMyMind:
       action === 'buy' || action === 'accumulate'
         ? `Two consecutive closes below ${round(plan.stopLoss)} or a bearish guidance update would move this to Hold/Reduce.`
-        : `A reclaim of ${round(plan.targets?.[0]?.price ?? analysis.price)} on expanding volume with positive news flow would upgrade this to Accumulate.`,
+        : `A close above ${round(reversalLevel)} on expanding volume with positive news flow would upgrade this to Accumulate.`,
     newsSentimentLabel: news?.label || 'no data',
     generatedBy: 'rule-engine',
     generatedAt: new Date().toISOString(),

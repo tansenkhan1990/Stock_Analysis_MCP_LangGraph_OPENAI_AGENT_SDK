@@ -199,10 +199,12 @@ export async function getNewsHistory(symbol, { days = 30 } = {}) {
 /** Archived business deals for a symbol. */
 export async function getDeals(symbol, { days = 90, limit = 30 } = {}) {
   if (!isMongoReady()) return [];
-  const since = new Date(Date.now() - days * 86_400_000);
+  const windowDays = Math.min(Math.max(Number(days) || 90, 1), 365);
+  const maxDocs = Math.min(Math.max(Number(limit) || 30, 1), 100);
+  const since = new Date(Date.now() - windowDays * 86_400_000);
   return NewsItem.find({ symbol, isDeal: true, $or: [{ publishedAt: { $gte: since } }, { publishedAt: null }] })
     .sort({ publishedAt: -1, ingestedAt: -1 })
-    .limit(Math.min(limit, 100))
+    .limit(maxDocs)
     .select({ _id: 0, title: 1, link: 1, publisher: 1, publishedAt: 1, direction: 1, score: 1, tags: 1 })
     .lean();
 }
@@ -210,10 +212,12 @@ export async function getDeals(symbol, { days = 90, limit = 30 } = {}) {
 /** Archived headlines for a symbol. */
 export async function getArchivedNews(symbol, { limit = 50, days = 60 } = {}) {
   if (!isMongoReady()) return [];
-  const since = new Date(Date.now() - days * 86_400_000);
+  const windowDays = Math.min(Math.max(Number(days) || 60, 1), 365);
+  const maxDocs = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const since = new Date(Date.now() - windowDays * 86_400_000);
   return NewsItem.find({ symbol, $or: [{ publishedAt: { $gte: since } }, { publishedAt: null }] })
     .sort({ publishedAt: -1, ingestedAt: -1 })
-    .limit(Math.min(limit, 200))
+    .limit(maxDocs)
     .select({ _id: 0, title: 1, link: 1, publisher: 1, publishedAt: 1, direction: 1, score: 1, tags: 1, isDeal: 1 })
     .lean();
 }

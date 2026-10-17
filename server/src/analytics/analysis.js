@@ -345,8 +345,29 @@ export function buildAnalysis({ quote, history, fundamentals = null, benchmark =
     const growth = fundamentals.revenueGrowth;
     const analystUpside = fundamentals.analystTarget ? pct(price, fundamentals.analystTarget) : null;
 
-    valuePoints += peg ? (peg < 1 ? 26 : peg < 2 ? 18 : peg < 3 ? 10 : 3) : pe ? (pe < 18 ? 20 : pe < 30 ? 15 : pe < 45 ? 8 : 3) : 10;
-    valuePoints += pe && forwardPe && forwardPe < pe ? 16 : 8;
+    // A negative P/E (loss-making) or PEG is not "cheap" — treat it as a
+    // neutral/unknown valuation instead of awarding the best score.
+    const pePositive = Number.isFinite(pe) && pe > 0;
+    const pegPositive = Number.isFinite(peg) && peg > 0;
+    valuePoints += pegPositive
+      ? peg < 1
+        ? 26
+        : peg < 2
+          ? 18
+          : peg < 3
+            ? 10
+            : 3
+      : pePositive
+        ? pe < 18
+          ? 20
+          : pe < 30
+            ? 15
+            : pe < 45
+              ? 8
+              : 3
+        : 10;
+    valuePoints +=
+      pePositive && Number.isFinite(forwardPe) && forwardPe > 0 && forwardPe < pe ? 16 : 8;
     valuePoints += margin !== null ? (margin > 0.2 ? 20 : margin > 0.1 ? 14 : margin > 0 ? 8 : 2) : 8;
     valuePoints += growth !== null ? (growth > 0.15 ? 22 : growth > 0.05 ? 15 : growth > 0 ? 8 : 2) : 8;
     valuePoints += analystUpside !== null ? clamp(8 + analystUpside, 0, 16) : 8;
@@ -427,7 +448,15 @@ export function buildAnalysis({ quote, history, fundamentals = null, benchmark =
   if (confirmedDowntrend) totalScore = Math.min(totalScore, 34);
 
   const label = SCORE_LABELS.find((item) => totalScore >= item.min);
-  const direction = totalScore < 45 ? 'short' : 'long';
+  // The plan's side must agree with the call's side. The alert is a regime
+  // rule: price below the 200-day with the 50-day also below it is a trend
+  // break, regardless of how the quality score rounds. Deriving the plan from
+  // the score alone let a Sell call carry an upside plan (targets above spot,
+  // "buy above" trigger) — two halves of the same card contradicting each
+  // other. A confirmed downtrend now produces downside levels, a stop above
+  // spot and a bearish invalidation, which is what the Sell label means.
+  const trendDownRegime = below200 === true && sma50 !== null && sma200 !== null && sma50 < sma200;
+  const direction = trendDownRegime || totalScore < 45 ? 'short' : 'long';
   const bullish = totalScore >= 56;
 
   // ---------- Entry, targets, stop ----------
@@ -477,6 +506,29 @@ export function buildAnalysis({ quote, history, fundamentals = null, benchmark =
   }
   stopLoss = round(stopLoss);
 
+  // A stop inside the entry band makes the plan self-contradictory: part of the
+  // "buy" range would already be past the exit, so risk-per-share would be zero
+  // or negative for an entry at the wrong end of the zone. Huge ATRs (above
+  // ~13% of spot) can widen the band enough for that to happen, so pull the
+  // near edge of the band back to the safe side of the stop.
+  if (direction === 'long' && buyZone && stopLoss >= buyZone.low) {
+    const lifted = round(stopLoss + Math.max(atrUnit * 0.15, price * 0.004));
+    if (lifted < price) {
+      const width = Math.max(atrUnit * 0.1, price * 0.002);
+      buyZone = { low: lifted, high: Math.min(price, Math.max(buyZone.high, lifted + width)) };
+    } else {
+      buyZone = null;
+    }
+  } else if (direction === 'short' && shortZone && stopLoss <= shortZone.high) {
+    const capped = round(stopLoss - Math.max(atrUnit * 0.15, price * 0.004));
+    if (capped > price) {
+      const width = Math.max(atrUnit * 0.1, price * 0.002);
+      shortZone = { low: Math.max(price, Math.min(shortZone.low, capped - width)), high: capped };
+    } else {
+      shortZone = null;
+    }
+  }
+
   const primaryTarget = targets[1]?.price ?? targets[0]?.price ?? null;
   // Risk/reward is measured from the planned entry (mid of the zone), not from
   // spot — chasing price above the zone would otherwise flatter the ratio.
@@ -491,6 +543,15 @@ export function buildAnalysis({ quote, history, fundamentals = null, benchmark =
   const riskPerShare = round(Math.abs(entryRef - stopLoss));
   const rewardPerShare = primaryTarget ? round(Math.abs(primaryTarget - entryRef)) : null;
   const riskReward = riskPerShare && rewardPerShare ? round(rewardPerShare / riskPerShare, 2) : null;
+
+  // The same ratio at the live price. The headline figure is measured from the
+  // reference entry, so a card that says "in the zone now" at the top of that
+  // range would be advertising a ratio the current price cannot deliver; this
+  // one is what a fill at spot actually earns.
+  const spotRisk = direction === 'long' ? price - stopLoss : stopLoss - price;
+  const spotReward =
+    primaryTarget === null ? null : direction === 'long' ? primaryTarget - price : price - primaryTarget;
+  const riskRewardAtSpot = spotRisk > 0 && spotReward > 0 ? round(spotReward / spotRisk, 2) : null;
 
   const confidence = clamp(
     Math.round(
@@ -527,12 +588,14 @@ export function buildAnalysis({ quote, history, fundamentals = null, benchmark =
       `Price is ${sma50 ? (price > sma50 ? 'above' : 'below') : 'near'} the 50-day and ${sma200 ? (price > sma200 ? 'above' : 'below') : 'near'} the 200-day; RSI ${round(rsiValue, 1)}, MACD ${macdBull ? 'bullish' : 'bearish'}.`,
     );
     rationale.push(
-      `Downside levels: ${targets.map((target) => `$${target.price}`).join(' → ') || 'not enough support data'}; invalidation above $${stopLoss}.`,
+      `${direction === 'long' ? 'Upside targets' : 'Downside levels'}: ${
+        targets.map((target) => `$${target.price}`).join(' → ') || 'not enough price data'
+      }; invalidation ${direction === 'long' ? 'below' : 'above'} $${stopLoss}.`,
     );
   }
   if (buyZone) {
     rationale.push(
-      `Preferred accumulation band $${buyZone.low}–$${buyZone.high}, stop $${stopLoss}, first target $${targets[0]?.price ?? '—'}${riskReward !== null ? ` (${riskReward}:1 reward-to-risk to T2)` : ''}.`,
+      `Buy zone $${buyZone.low}–$${buyZone.high} — the price range to accumulate, with a planned entry of $${entryRef} in the middle. First checkpoint (T1) $${targets[0]?.price ?? '—'}; main target (T2) $${primaryTarget ?? '—'}${riskReward !== null ? `, a ${riskReward}:1 reward-to-risk from the planned entry` : ''}. The idea is wrong on a daily close below the $${stopLoss} stop.`,
     );
   }
 
@@ -544,6 +607,20 @@ export function buildAnalysis({ quote, history, fundamentals = null, benchmark =
   if (!fundamentals) risks.push('Fundamental data unavailable; the score is technical-only.');
   if (riskReward !== null && riskReward < 1.5) {
     risks.push(`Reward-to-risk is only ${riskReward}:1 from the planned entry — wait for a pullback into the zone or size smaller.`);
+  }
+  // The plan is only as good as the entry it is measured from. When price sits
+  // inside the accumulation range, say out loud that a fill at spot earns less
+  // than the headline ratio instead of letting the card flatter itself.
+  if (
+    buyZone &&
+    price >= buyZone.low &&
+    riskReward !== null &&
+    riskRewardAtSpot !== null &&
+    riskRewardAtSpot < riskReward * 0.75
+  ) {
+    risks.push(
+      `A fill at the current $${round(price)} is only ${riskRewardAtSpot}:1 to the main target — the ${riskReward}:1 plan assumes the $${entryRef} reference entry, the middle of the $${round(buyZone.low)}–$${round(buyZone.high)} range.`,
+    );
   }
   if (!risks.length) risks.push('Broad-market shocks or earnings surprises can invalidate technical levels; use the stop.');
 
@@ -652,11 +729,15 @@ export function buildAnalysis({ quote, history, fundamentals = null, benchmark =
       stopLoss,
       riskPerShare,
       riskReward,
+      // Same ratio measured from the live price rather than the reference entry.
+      riskRewardAtSpot,
       riskBudgetExample: {
         accountSize: 10_000,
         riskPct: 1,
         riskDollars: 100,
-        shares: riskPerShare ? Math.max(1, Math.floor(100 / riskPerShare)) : null,
+        // A single share that already risks more than the $100 budget is not a
+        // valid size — report null rather than silently over-risking.
+        shares: riskPerShare && riskPerShare <= 100 ? Math.floor(100 / riskPerShare) : null,
       },
       horizon: totalScore >= 66 ? '4–8 weeks (swing)' : '2–4 weeks (tactical)',
       invalidation: direction === 'long' ? `Daily close below $${stopLoss}` : `Daily close above $${stopLoss}`,

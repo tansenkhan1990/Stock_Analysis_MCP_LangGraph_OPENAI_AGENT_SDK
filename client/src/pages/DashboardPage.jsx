@@ -113,7 +113,8 @@ export default function DashboardPage({ go }) {
           <div className="eyebrow">MARKET COMMAND CENTER</div>
           <h1>What is the tape telling you?</h1>
           <p className="page-sub">
-            Live Yahoo Finance prices, a transparent multi-factor score, and a concrete buy zone, targets and stop for every name you follow.
+            Live Yahoo Finance prices for the names you follow, each with a clear 0–100 quality score, a price range to buy in,
+            profit targets and a stop. The Buy/Hold/Sell call follows the trend, not the score.
           </p>
         </div>
         <div className="head-actions">
@@ -290,18 +291,25 @@ export default function DashboardPage({ go }) {
                   <th>Last</th>
                   <th>Day</th>
                   <th>Score</th>
-                  <th>Verdict</th>
-                  <th title="LLM desk call — run the AI pass to fill this column">AI</th>
+                  <th title="The model's call once the AI desk has run; the rule engine stands in until then">Call</th>
+                  <th title="The mechanical rule-engine call, kept as a cross-check">Engine</th>
                   <th>Buy zone</th>
-                  <th>Sell targets</th>
+                  <th title="Profit targets above spot on a long plan; downside levels on a short plan">Targets</th>
                   <th>Stop</th>
-                  <th>R:R</th>
+                  <th title="Reward-to-risk to the main target (T2), measured from the reference entry">R:R (T2)</th>
                   <th>40d</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
-                {signals.map((signal) => (
+                {signals.map((signal) => {
+                  // The model owns the call when a desk pass has produced one; the
+                  // engine's verdict stays in the next column as the cross-check.
+                  const aiEntry = aiDecisions?.[signal.symbol];
+                  const aiCall =
+                    aiEntry?.decision && aiEntry.decisionMeta?.provider !== 'rule-engine' ? aiEntry.decision : null;
+                  const call = aiCall || { action: signal.action, actionLabel: signal.actionLabel };
+                  return (
                   <tr key={signal.symbol} onClick={() => go(`/analyze/${signal.symbol}`)} className="clickable">
                     <td>
                       <div className="ticker-cell">
@@ -315,27 +323,41 @@ export default function DashboardPage({ go }) {
                       <span className={`score-chip ${scoreTone(signal.score)}`}>{signal.score}</span>
                     </td>
                     <td>
-                      <span className={`signal-pill ${signal.action}`}>{signal.actionLabel}</span>
+                      <span className={`signal-pill ${call.action}`}>{call.actionLabel}</span>
+                      {aiCall && (
+                        <span
+                          className="ai-badge live"
+                          title={`${aiEntry.decisionMeta?.model || 'LLM'} call — ${aiCall.conviction}% conviction`}
+                        >
+                          ✦
+                        </span>
+                      )}
                     </td>
                     <td>
-                      {aiDecisions?.[signal.symbol]?.decision ? (
+                      {aiDecisions ? (
                         <span className="ai-cell">
-                          <span className={`signal-pill ${aiDecisions[signal.symbol].decision.action}`}>
-                            {aiDecisions[signal.symbol].decision.actionLabel}
-                          </span>
-                          <span className="muted small">{aiDecisions[signal.symbol].decision.conviction}%</span>
-                          {aiDecisions[signal.symbol].decision.action !== signal.action && (
-                            <span className="chip warn" title={`Conflicts with the mechanical call: engine says ${signal.actionLabel}`}>
-                              ≠ engine
+                          <span className={`signal-pill ${signal.action}`}>{signal.actionLabel}</span>
+                          {aiCall && aiCall.action !== signal.action && (
+                            <span className="chip warn" title="The model reads the tape differently from the rule engine">
+                              model disagrees
                             </span>
                           )}
                         </span>
                       ) : (
-                        <span className="muted small">{aiDecisions ? '—' : 'not run'}</span>
+                        <span className="muted small">not run</span>
                       )}
                     </td>
                     <td className="mono">
-                      {signal.buyZone ? `${money(signal.buyZone.low, 0)}–${money(signal.buyZone.high, 0)}` : <span className="muted">wait</span>}
+                      {signal.buyZone ? (
+                        <>
+                          {money(signal.buyZone.low, 0)}–{money(signal.buyZone.high, 0)}
+                          {signal.entryRef ? <span className="muted small"> · entry {money(signal.entryRef, 0)}</span> : null}
+                        </>
+                      ) : (
+                        <span className="muted">
+                          {['buy', 'accumulate'].includes(signal.action) ? 'wait' : '—'}
+                        </span>
+                      )}
                     </td>
                     <td className="mono targets-cell">
                       {signal.targets?.length
@@ -364,7 +386,8 @@ export default function DashboardPage({ go }) {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -373,7 +396,7 @@ export default function DashboardPage({ go }) {
         {aiDecisions && (
           <div className="alert alert-success tiny">
             AI desk reviewed {Object.keys(aiDecisions).length} names
-            {aiMeta ? ` · ${aiMeta.provider} · ${aiMeta.model}` : ' — no LLM key configured, so the AI column shows the engine call'}.
+            {aiMeta ? ` · ${aiMeta.provider} · ${aiMeta.model}` : ' — no LLM key configured, so the call column shows the engine verdict'}.
           </div>
         )}
         {aiError && <div className="alert alert-error">AI desk failed — {aiError}</div>}

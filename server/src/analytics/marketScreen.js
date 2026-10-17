@@ -98,19 +98,12 @@ export function buildMarketTape({
 
   const rows = new Map();
 
-  const addQuote = (quote) => {
-    if (!isTradeableQuote(quote, { minPrice, minAverageVolume })) return;
+  const rowFor = (quote, sources) => {
     const symbol = String(quote.symbol).toUpperCase();
     const averageVolume = Number(quote.averageVolume) || 0;
     const volume = Number(quote.volume) || 0;
     const relativeVolume = averageVolume > 0 && volume > 0 ? round(volume / averageVolume, 2) : null;
-    const existing = rows.get(symbol);
-    if (existing) {
-      // A symbol can appear in several screens; keep the richest quote.
-      if (!existing.sources.includes(quote.screenId)) existing.sources.push(quote.screenId);
-      return;
-    }
-    rows.set(symbol, {
+    return {
       symbol,
       name: quote.name || symbol,
       quoteType: quote.quoteType || 'EQUITY',
@@ -127,14 +120,32 @@ export function buildMarketTape({
       marketState: quote.marketState ?? null,
       curated: curatedSet.has(symbol),
       watchlist: watchSet.has(symbol),
-      sources: [quote.screenId].filter(Boolean),
+      sources,
       heat: heatScore({
         changePercent: quote.changePercent,
         volume,
         averageVolume,
         marketCap: quote.marketCap,
       }),
-    });
+    };
+  };
+
+  const addQuote = (quote) => {
+    if (!isTradeableQuote(quote, { minPrice, minAverageVolume })) return;
+    const symbol = String(quote.symbol).toUpperCase();
+    const volume = Number(quote.volume) || 0;
+    const existing = rows.get(symbol);
+    if (existing) {
+      // A symbol can appear in several screens with different snapshots. Track
+      // every source, but keep the quote with the most traded volume (and its
+      // matching relative volume and heat) instead of whichever screen ran
+      // first.
+      if (!existing.sources.includes(quote.screenId)) existing.sources.push(quote.screenId);
+      if (volume <= (existing.volume || 0)) return;
+      rows.set(symbol, rowFor(quote, existing.sources));
+      return;
+    }
+    rows.set(symbol, rowFor(quote, [quote.screenId].filter(Boolean)));
   };
 
   for (const screen of screens) {

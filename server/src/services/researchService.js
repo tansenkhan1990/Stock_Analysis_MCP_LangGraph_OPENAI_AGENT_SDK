@@ -1,5 +1,5 @@
 import { describeProvider } from '../agent/providers.js';
-import { ruleEngineMeta, symbolAiDecision } from '../agent/symbolDesk.js';
+import { peekDecision, ruleEngineMeta, symbolAiDecision, withDeskDecision } from '../agent/symbolDesk.js';
 import { ACTION_RANK, buildAlert } from '../analytics/alert.js';
 import { builtinDecision, combinedSignal, eventRisk, tradeTriggers } from '../analytics/decision.js';
 import { analyzeAnalystActions } from '../analytics/news.js';
@@ -34,6 +34,9 @@ const compactPlan = (analysis) => ({
   })),
   stopLoss: analysis.plan.stopLoss,
   riskReward: analysis.plan.riskReward,
+  // Same ratio at the live price, so a surface can tell the reference-entry
+  // figure apart from what a fill at spot actually earns.
+  riskRewardAtSpot: analysis.plan.riskRewardAtSpot,
   horizon: analysis.plan.horizon,
   invalidation: analysis.plan.invalidation,
   triggers: tradeTriggers({ analysis }),
@@ -50,13 +53,17 @@ async function trackedSymbols() {
  * activity and event risk for every name in the user's watchlist — fused into
  * one actionable call per symbol. Deliberately skips option-chain fetches so a
  * cold load stays fast; deep research pulls the chain on demand.
+ *
+ * Only the evidence is cached: the decision layer is applied per request from
+ * the desk cache, so a model call made a second ago is what the board shows
+ * instead of waiting out the analytics cache.
  */
 export async function getFocusBoard({ symbols } = {}) {
   const requested = symbols ?? (await trackedSymbols());
   const universe = requested.map((symbol) => focusMeta(symbol)).filter(Boolean);
   const key = `focusBoard:${universe.map((item) => item.symbol).join(',')}`;
 
-  return cache.wrap(key, BOARD_TTL, async () => {
+  const rows = await cache.wrap(key, BOARD_TTL, async () => {
     const [quotes, benchmark] = await Promise.all([
       getQuotes(universe.map((item) => item.symbol)),
       // Same benchmark the deep-research call uses, so a card and its desk call
@@ -86,6 +93,16 @@ export async function getFocusBoard({ symbols } = {}) {
         const signal = combinedSignal({ analysis, news, analyst, event });
         const alert = buildAlert({ analysis, news, newsHistory: history7d, analyst, event });
 
+        const engineDecision = {
+          ...signal,
+          action: alert?.action ?? 'hold',
+          actionLabel: alert?.actionLabel ?? 'Hold',
+          conviction: alert?.confidence ?? signal.conviction,
+          setup: alert?.setup ?? null,
+          setupLabel: alert?.setupLabel ?? null,
+          alert,
+          triggers: tradeTriggers({ analysis }),
+        };
         return {
           symbol: meta.symbol,
           name: quote.name || meta.name,
@@ -118,15 +135,20 @@ export async function getFocusBoard({ symbols } = {}) {
             latest: analyst.latest.slice(0, 2),
           },
           event,
-          decision: {
-            ...signal,
-            action: alert?.action ?? 'hold',
-            actionLabel: alert?.actionLabel ?? 'Hold',
-            conviction: alert?.confidence ?? signal.conviction,
-            setup: alert?.setup ?? null,
-            setupLabel: alert?.setupLabel ?? null,
-            alert,
-            triggers: tradeTriggers({ analysis }),
+          // The mechanical call is the row's default decision; the desk layer
+          // below replaces it the moment a model call exists, so the board
+          // always carries an actionable verdict.
+          decision: engineDecision,
+          decisionSource: 'rule-engine',
+          decisionMeta: ruleEngineMeta(),
+          // Kept separately so every surface can show the engine's call as a
+          // cross-check instead of silently swapping it out.
+          engineDecision: {
+            action: engineDecision.action,
+            actionLabel: engineDecision.actionLabel,
+            setup: engineDecision.setup,
+            setupLabel: engineDecision.setupLabel,
+            conviction: engineDecision.conviction,
           },
           newsHistory: history7d
             ? {
@@ -141,37 +163,54 @@ export async function getFocusBoard({ symbols } = {}) {
       }),
     );
 
-    // Rank by setup first (buy → sell is a risk ladder), then conviction.
-    const signals = rows
-      .filter(Boolean)
-      .sort(
-        (a, b) =>
-          (ACTION_RANK[a.decision.action] ?? 5) - (ACTION_RANK[b.decision.action] ?? 5) ||
-          b.decision.conviction - a.decision.conviction,
-      );
-    const buys = signals.filter((row) => ['buy', 'accumulate'].includes(row.decision.action));
-    const sells = signals.filter((row) => ['sell', 'reduce'].includes(row.decision.action));
-
-    return {
-      generatedAt: new Date().toISOString(),
-      universe,
-      counts: {
-        total: signals.length,
-        buy: signals.filter((row) => row.decision.action === 'buy').length,
-        accumulate: signals.filter((row) => row.decision.action === 'accumulate').length,
-        hold: signals.filter((row) => row.decision.action === 'hold').length,
-        reduce: signals.filter((row) => row.decision.action === 'reduce').length,
-        sell: signals.filter((row) => row.decision.action === 'sell').length,
-        deals: signals.reduce((acc, row) => acc + (row.news?.dealCount || 0), 0),
-      },
-      topPick: buys[0] || signals[0] || null,
-      topRisk: sells[0] || signals[signals.length - 1] || null,
-      averageNewsSentiment: signals.length
-        ? Math.round(signals.reduce((acc, row) => acc + (row.news?.sentiment || 0), 0) / signals.length)
-        : 0,
-      signals,
-    };
+    return rows.filter(Boolean);
   });
+
+  // The model owns the call: layer every desk decision that exists onto its row
+  // and rank by the resulting verdict (buy → sell is a risk ladder).
+  const signals = rows
+    .map((row) => {
+      const desk = peekDecision(row.symbol);
+      if (!desk) return row;
+      return {
+        ...row,
+        decision: withDeskDecision(row.decision, desk),
+        decisionSource: 'llm',
+        decisionMeta: desk.decisionMeta,
+      };
+    })
+    .sort(
+      (a, b) =>
+        (ACTION_RANK[a.decision.action] ?? 5) - (ACTION_RANK[b.decision.action] ?? 5) ||
+        b.decision.conviction - a.decision.conviction,
+    );
+  const buys = signals.filter((row) => ['buy', 'accumulate'].includes(row.decision.action));
+  const sells = signals.filter((row) => ['sell', 'reduce'].includes(row.decision.action));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    universe,
+    counts: {
+      total: signals.length,
+      buy: signals.filter((row) => row.decision.action === 'buy').length,
+      accumulate: signals.filter((row) => row.decision.action === 'accumulate').length,
+      hold: signals.filter((row) => row.decision.action === 'hold').length,
+      reduce: signals.filter((row) => row.decision.action === 'reduce').length,
+      sell: signals.filter((row) => row.decision.action === 'sell').length,
+      deals: signals.reduce((acc, row) => acc + (row.news?.dealCount || 0), 0),
+    },
+    topPick: buys[0] || signals[0] || null,
+    topRisk: sells[0] || signals[signals.length - 1] || null,
+    // Who decided each row: the model, or the rule engine standing in for it.
+    decisions: {
+      llm: signals.filter((row) => row.decisionSource === 'llm').length,
+      ruleEngine: signals.filter((row) => row.decisionSource === 'rule-engine').length,
+    },
+    averageNewsSentiment: signals.length
+      ? Math.round(signals.reduce((acc, row) => acc + (row.news?.sentiment || 0), 0) / signals.length)
+      : 0,
+    signals,
+  };
 }
 
 /** Evidence bundle shared by the rule engine and the LLM. */

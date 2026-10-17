@@ -8,7 +8,9 @@ import {
   tradeTriggers,
 } from '../src/analytics/decision.js';
 import { normalizeAction, normalizeDecision, parseDecisionJson } from '../src/agent/llmDecision.js';
+import { peekDecision, withDeskDecision } from '../src/agent/symbolDesk.js';
 import { buildAnalysis } from '../src/analytics/analysis.js';
+import { cache } from '../src/lib/cache.js';
 
 function makeBars(n, drift = 0.3) {
   return Array.from({ length: n }, (_, i) => {
@@ -166,6 +168,203 @@ test('every call carries a two-sided trigger with buy above and sell below', () 
     options: null,
   });
   assert.deepEqual(decision.triggers, triggers);
+});
+
+test('the exit trigger never sits inside the buy zone it tells you to accumulate in', () => {
+  const analysis = analysisFixture();
+  const triggers = tradeTriggers({ analysis });
+
+  assert.ok(analysis.plan.buyZone, 'fixture carries an accumulation range');
+  assert.ok(
+    triggers.sellBelow <= analysis.plan.buyZone.low,
+    `exit ${triggers.sellBelow} must sit below the ${analysis.plan.buyZone.low} buy-zone floor`,
+  );
+  // The exit is either an earlier support break above the stop or the stop
+  // itself. Never a level between the two: when the nearest support sits inside
+  // the buy zone, the exit is the stop (a "support break" there would be a price
+  // the card still tells you to buy at).
+  assert.ok(triggers.sellBelow >= analysis.plan.stopLoss, 'the exit sits at or above the hard stop');
+  assert.equal(triggers.exitIsStop, true, 'a support inside the buy zone hands the exit to the planned stop');
+  assert.match(triggers.sellHint, /stop-loss exit, not a sell target/);
+});
+
+test('a long card names the lower level as an exit, not a sell target', () => {
+  const analysis = analysisFixture();
+  const triggers = tradeTriggers({ analysis });
+  const entry = analysis.plan.entryRef ?? analysis.price;
+
+  assert.equal(triggers.buyLabel, 'BUY ABOVE');
+  assert.equal(triggers.sellLabel, 'EXIT BELOW');
+  assert.match(triggers.sellHint, /not a sell target/);
+  // The exit is below the reference entry by construction; the profit targets
+  // are the numbers above spot, so "sell lower" is the stop-loss, not a loss-making
+  // trade instruction.
+  assert.ok(triggers.sellBelow < entry);
+  assert.ok(triggers.buyAbove >= analysis.price);
+  assert.ok(analysis.plan.targets[0].price > analysis.price);
+});
+
+test('a short card enters above its first target, never below it', () => {
+  const long = analysisFixture();
+  const short = JSON.parse(JSON.stringify(long));
+  short.plan.direction = 'short';
+  short.plan.buyZone = null;
+  short.plan.shortZone = { low: Number((short.price + 3).toFixed(2)), high: Number((short.price + 6).toFixed(2)) };
+  short.plan.stopLoss = Number((short.price + 8).toFixed(2));
+  short.plan.targets = [
+    { label: 'T1', price: Number((short.price - 4).toFixed(2)), upsidePct: 2.3, source: 'support', probability: 60 },
+    { label: 'T2', price: Number((short.price - 8).toFixed(2)), upsidePct: 4.6, source: 'ATR projection', probability: 50 },
+    { label: 'T3', price: Number((short.price - 12).toFixed(2)), upsidePct: 6.9, source: 'ATR projection', probability: 40 },
+  ];
+
+  const triggers = tradeTriggers({ analysis: short });
+
+  assert.equal(triggers.buyLabel, 'STOP ABOVE');
+  assert.equal(triggers.sellLabel, 'BREAKDOWN BELOW');
+  assert.match(triggers.sellHint, /not a short recommendation/);
+  assert.ok(triggers.sellBelow < short.price, 'the breakdown level is below spot');
+  assert.ok(
+    triggers.sellBelow > short.plan.targets[0].price,
+    `breakdown level ${triggers.sellBelow} must sit above T1 ${short.plan.targets[0].price}`,
+  );
+  assert.match(triggers.sellNote, /first downside level/);
+});
+
+test('a price inside the buy zone is called in-zone, not a breakout', () => {
+  const inZone = JSON.parse(JSON.stringify(analysisFixture()));
+  inZone.plan.buyZone = { low: Number((inZone.price * 0.98).toFixed(2)), high: inZone.price };
+  inZone.plan.stopLoss = Number((inZone.price * 0.95).toFixed(2));
+
+  const triggers = tradeTriggers({ analysis: inZone });
+
+  assert.equal(triggers.inBuyZone, true);
+  // The breakout level is a whisker above spot, so the note (and the card) must
+  // say the zone is already live instead of asking for a breakout.
+  assert.ok(triggers.distanceToBuyPct >= 0 && triggers.distanceToBuyPct < 0.2);
+  assert.match(triggers.buyNote, /inside the .+ buy zone — accumulate here/);
+  assert.ok(triggers.sellBelow <= inZone.plan.buyZone.low);
+});
+
+test('on a Reduce/Sell call the upper level is a reclaim, not a buy trigger', () => {
+  const analysis = analysisFixture();
+  analysis.alert = { ...(analysis.alert || {}), action: 'reduce', actionLabel: 'Reduce' };
+  const triggers = tradeTriggers({ analysis });
+
+  assert.equal(triggers.buyLabel, 'RECLAIM ABOVE');
+  assert.match(triggers.buyHint, /cancel the exit call/);
+  assert.equal(triggers.sellLabel, 'EXIT BELOW');
+});
+
+test('an LLM short entry below its own first target is rejected', () => {
+  const short = JSON.parse(JSON.stringify(analysisFixture()));
+  short.plan.direction = 'short';
+  short.plan.buyZone = null;
+  short.plan.shortZone = { low: Number((short.price + 3).toFixed(2)), high: Number((short.price + 6).toFixed(2)) };
+  short.plan.stopLoss = Number((short.price + 8).toFixed(2));
+  short.plan.targets = [
+    { label: 'T1', price: Number((short.price - 4).toFixed(2)), upsidePct: 2.3, source: 'support', probability: 60 },
+    { label: 'T2', price: Number((short.price - 8).toFixed(2)), upsidePct: 4.6, source: 'ATR projection', probability: 50 },
+    { label: 'T3', price: Number((short.price - 12).toFixed(2)), upsidePct: 6.9, source: 'ATR projection', probability: 40 },
+  ];
+  const fallback = builtinDecision({
+    symbol: 'TSLA',
+    meta: { symbol: 'TSLA', name: 'Tesla Inc.', theme: 'EV' },
+    analysis: short,
+    news: newsFixture(-20),
+    analyst: { tilt: -0.2, upgrades: 1, downgrades: 2, total: 3, window: '120 days', latest: [] },
+    event: eventRisk({}),
+    options: null,
+  });
+
+  // "Short below T1" would leave the model's own first target above its entry.
+  const belowTarget = normalizeDecision(
+    { action: 'sell', triggers: { sellBelow: Number((fallback.triggers.firstTarget - 1).toFixed(2)) } },
+    fallback,
+    { price: short.price, buyZone: null },
+  );
+  assert.equal(belowTarget.triggers.sellBelow, fallback.triggers.sellBelow);
+
+  // A level above the first target is accepted and keeps the target below it.
+  const inRange = Number((fallback.triggers.firstTarget + 1).toFixed(2));
+  const accepted = normalizeDecision(
+    { action: 'sell', triggers: { sellBelow: inRange } },
+    fallback,
+    { price: short.price, buyZone: null },
+  );
+  assert.equal(accepted.triggers.sellBelow, inRange);
+});
+
+test('LLM trigger levels on the wrong side of the plan are rejected', () => {
+  const analysis = analysisFixture();
+  const fallback = builtinDecision({
+    symbol: 'NVDA',
+    meta: { symbol: 'NVDA', name: 'NVIDIA Corp.', theme: 'AI compute' },
+    analysis,
+    news: newsFixture(20),
+    analyst: { tilt: 0, upgrades: 1, downgrades: 1, total: 2, window: '120 days', latest: [] },
+    event: eventRisk({}),
+    options: null,
+  });
+  const { price, plan } = analysis;
+  assert.ok(plan.buyZone, 'fixture carries an accumulation range');
+
+  const decision = normalizeDecision(
+    {
+      action: 'hold',
+      // A "buy above" level below spot, and an exit inside the accumulation
+      // range, would each print a level that contradicts its own label.
+      triggers: { buyAbove: Number((price * 0.99).toFixed(2)), sellBelow: Number((plan.buyZone.low + 0.5).toFixed(2)) },
+    },
+    fallback,
+    { price, buyZone: plan.buyZone },
+  );
+
+  assert.equal(decision.triggers.buyAbove, fallback.triggers.buyAbove);
+  assert.equal(decision.triggers.sellBelow, fallback.triggers.sellBelow);
+
+  // Levels on the correct side still come through.
+  const accepted = normalizeDecision(
+    { action: 'hold', triggers: { buyAbove: Number((price * 1.02).toFixed(2)), sellBelow: fallback.triggers.sellBelow } },
+    fallback,
+    { price, buyZone: plan.buyZone },
+  );
+  assert.equal(accepted.triggers.buyAbove, Number((price * 1.02).toFixed(2)));
+});
+
+test('a desk call owns the decision while the engine keeps supplying the rest', () => {
+  const engineDecision = {
+    action: 'buy',
+    actionLabel: 'Buy',
+    score: 72,
+    setup: 'pullback',
+    setupLabel: 'Uptrend pullback',
+    conviction: 64,
+  };
+  const desk = {
+    decision: { action: 'hold', actionLabel: 'Hold', generatedBy: 'llm', conviction: 55 },
+    decisionMeta: { provider: 'openai', model: 'test-model' },
+  };
+
+  assert.deepEqual(withDeskDecision(engineDecision, null), engineDecision, 'no desk call leaves the engine in place');
+  assert.deepEqual(withDeskDecision(engineDecision, {}), engineDecision);
+
+  const merged = withDeskDecision(engineDecision, desk);
+  assert.equal(merged.action, 'hold', 'the model owns the action');
+  assert.equal(merged.generatedBy, 'llm');
+  assert.equal(merged.score, 72, 'the fused quality score survives');
+  assert.equal(merged.setupLabel, 'Uptrend pullback', 'the engine setup context survives as the cross-check');
+});
+
+test('a prepared desk call can be read back without calling the model', () => {
+  const decision = { action: 'accumulate', actionLabel: 'Accumulate', generatedBy: 'llm' };
+  cache.set('decision:ZZTEST', { decision, decisionMeta: { provider: 'openai', model: 'm' } }, 60_000);
+
+  const peeked = peekDecision('ZZTEST');
+  assert.equal(peeked.decision.action, 'accumulate');
+  assert.equal(peeked.decisionMeta.cached, true);
+
+  cache.clear('decision:ZZTEST');
+  assert.equal(peekDecision('ZZTEST'), null, 'an expired/absent call never falls back to a cached engine verdict');
 });
 
 test('LLM action aliases normalize onto the enum', () => {

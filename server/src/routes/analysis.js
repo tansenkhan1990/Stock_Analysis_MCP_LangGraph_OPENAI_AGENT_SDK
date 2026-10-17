@@ -52,7 +52,11 @@ analysisRouter.get(
     const analysis = await getAnalysis(symbol, { withOptions, refresh });
     if (persist) {
       try {
-        analysis.snapshotId = await saveSnapshot(analysis);
+        // Attach the id to the response copy only: `analysis` is the object
+        // held by the shared analysis cache, and mutating it would leak a
+        // snapshot id into every later (non-persist) response.
+        const snapshotId = await saveSnapshot(analysis);
+        return res.json({ ...analysis, snapshotId });
       } catch (error) {
         console.warn('[store] failed to persist analysis:', error.message);
       }

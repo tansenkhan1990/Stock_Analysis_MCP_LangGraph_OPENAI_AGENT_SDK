@@ -80,7 +80,7 @@ async function resolveTicker(message, contextSymbol, history = []) {
 function planTable(analysis) {
   const { plan } = analysis;
   const rows = [];
-  if (plan.buyZone) rows.push(`| Accumulation zone | ${fmt(plan.buyZone.low)} – ${fmt(plan.buyZone.high)} |`);
+  if (plan.buyZone) rows.push(`| Buy zone (price range to accumulate) | ${fmt(plan.buyZone.low)} – ${fmt(plan.buyZone.high)} |`);
   if (plan.shortZone) rows.push(`| Short / trim zone | ${fmt(plan.shortZone.low)} – ${fmt(plan.shortZone.high)} |`);
   for (const target of plan.targets) {
     rows.push(`| ${target.label} target | ${fmt(target.price)} (${target.upsidePct}% · ${target.probability}% est.) |`);

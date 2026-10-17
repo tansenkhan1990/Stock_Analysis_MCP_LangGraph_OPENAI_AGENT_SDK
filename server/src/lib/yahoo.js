@@ -266,7 +266,13 @@ export async function getFundamentals(symbol) {
         profitMargin: num(fd.profitMargins),
         operatingMargin: num(fd.operatingMargins),
         revenueGrowth: num(fd.revenueGrowth),
-        earningsGrowth: num(fd.earningsGrowth),
+        // Financial-data growth is the reported figure; fall back to the
+        // forward estimate when Yahoo omits it. A duplicate key here used to
+        // overwrite a valid value with null.
+        earningsGrowth:
+          num(fd.earningsGrowth) ??
+          num(raw.earningsTrend?.trend?.find((item) => item.period === '0y')?.earningsEstimate?.growth) ??
+          null,
         returnOnEquity: num(fd.returnOnEquity),
         totalCash: num(fd.totalCash),
         totalDebt: num(fd.totalDebt),
@@ -304,8 +310,6 @@ export async function getFundamentals(symbol) {
         earningsDate: raw.calendarEvents?.earnings?.earningsDate?.[0]
           ? new Date(raw.calendarEvents.earnings.earningsDate[0]).toISOString()
           : null,
-        earningsGrowth:
-          num(raw.earningsTrend?.trend?.find((item) => item.period === '0y')?.earningsEstimate?.growth) ?? null,
         institutionTop: (raw.institutionOwnership?.ownershipList || []).slice(0, 5).map((owner) => ({
           organization: owner.organization,
           pctHeld: num(owner.pctHeld),
@@ -347,7 +351,10 @@ export async function getExpirations(symbol) {
     } catch (error) {
       throw translateError(error, symbol);
     }
-    const dates = (raw?.expirationDates || []).map((date) => new Date(date).toISOString().slice(0, 10));
+    const dates = (raw?.expirationDates || [])
+      .map((date) => new Date(date))
+      .filter((date) => !Number.isNaN(date.getTime()))
+      .map((date) => date.toISOString().slice(0, 10));
     return { symbol, expirations: dates, strikes: raw?.strikes || [] };
   });
 }
@@ -364,13 +371,19 @@ export async function getOptionChain(symbol, date) {
     }
     const block = raw?.options?.[0];
     if (!block) throw new HttpError(404, `No options chain available for ${symbol}`);
-    const expiration = new Date(block.expirationDate || raw.expirationDates?.[0] || date)
-      .toISOString()
-      .slice(0, 10);
+    // Yahoo occasionally returns an expiry the JS Date cannot parse; a thrown
+    // RangeError here would turn a usable chain into a 500.
+    const expirySource = block.expirationDate || raw.expirationDates?.[0] || date;
+    const expiryDate = expirySource ? new Date(expirySource) : null;
+    const expiration =
+      expiryDate && !Number.isNaN(expiryDate.getTime()) ? expiryDate.toISOString().slice(0, 10) : null;
     return {
       symbol,
       expiration,
-      expirations: (raw.expirationDates || []).map((d) => new Date(d).toISOString().slice(0, 10)),
+      expirations: (raw.expirationDates || [])
+        .map((d) => new Date(d))
+        .filter((d) => !Number.isNaN(d.getTime()))
+        .map((d) => d.toISOString().slice(0, 10)),
       spot: null,
       calls: (block.calls || []).map(normalizeContract).filter((c) => c.strike),
       puts: (block.puts || []).map(normalizeContract).filter((c) => c.strike),

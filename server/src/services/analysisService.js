@@ -44,10 +44,11 @@ export async function getOptionsPlan(symbol, analysis, expiration = null) {
   const [quote, expiryInfo] = await Promise.all([getQuote(symbol), getExpirations(symbol)]);
   const chosen = expiration || pickExpiration(expiryInfo.expirations);
   if (!chosen) return null;
-  const chain = await getOptionChain(symbol, chosen);
+  // The chain comes from a shared cache; copy it before attaching request-time
+  // fields so one caller cannot mutate another caller's cached payload.
+  const cachedChain = await getOptionChain(symbol, chosen);
   const spot = quote.price ?? analysis.price;
-  chain.spot = spot;
-  chain.expiration = chain.expiration || chosen;
+  const chain = { ...cachedChain, spot, expiration: cachedChain.expiration || chosen };
 
   const { summary, plans } = buildOptionPlans({
     symbol,
@@ -125,6 +126,9 @@ const compactSignal = (analysis, sparkline) => ({
   conviction: analysis.alert?.confidence ?? analysis.score.confidence,
   confidence: analysis.score.confidence,
   buyZone: analysis.plan.buyZone,
+  // The reference entry every plan number is measured from, so a board can
+  // show where the R:R and the stop distances actually come from.
+  entryRef: analysis.plan.entryRef,
   targets: analysis.plan.targets.map((target) => ({
     label: target.label,
     price: target.price,
@@ -135,7 +139,12 @@ const compactSignal = (analysis, sparkline) => ({
   stopLoss: analysis.plan.stopLoss,
   riskReward: analysis.plan.riskReward,
   rsi: analysis.indicators.rsi14,
-  trend: analysis.indicators.sma50 && analysis.price > analysis.indicators.sma50 ? 'up' : 'down',
+  trend:
+    analysis.indicators.sma50 === null
+      ? null
+      : analysis.price > analysis.indicators.sma50
+        ? 'up'
+        : 'down',
   sparkline,
 });
 
@@ -259,6 +268,7 @@ async function buildAiIdea(symbol) {
   const decision = desk?.decision;
   const structure = decision?.structure;
   if (!desk?.summary || !structure) return null;
+  const source = desk.source === 'ai' ? 'ai' : 'engine';
   return {
     symbol: desk.symbol,
     name: desk.name,
@@ -281,9 +291,9 @@ async function buildAiIdea(symbol) {
     maxPain: desk.summary.maxPain,
     pcrOi: desk.summary.pcrOi,
     positioning: desk.summary.positioning,
-    source: 'ai',
-    provider: desk.decisionMeta?.provider ?? null,
-    model: desk.decisionMeta?.model ?? null,
+    source,
+    provider: source === 'ai' ? desk.decisionMeta?.provider ?? null : null,
+    model: source === 'ai' ? desk.decisionMeta?.model ?? null : null,
     reasoning: decision.thesis,
     management: decision.management,
     risks: decision.risks,
@@ -336,11 +346,15 @@ export async function getOptionsIdeas(symbols = [], { ai = false } = {}) {
           (ACTION_RANK[a.action] ?? 5) - (ACTION_RANK[b.action] ?? 5) || (b.score ?? 0) - (a.score ?? 0),
       );
 
+    // A configured provider can still fall back to the engine (no usable
+    // structure, provider error); label the payload by what actually produced
+    // the ideas, not by whether an AI pass was requested.
+    const usedAi = ideas.some((idea) => idea.source === 'ai');
     return {
       generatedAt: new Date().toISOString(),
-      source: wantAi ? 'ai' : 'engine',
-      provider: wantAi ? provider.provider : null,
-      model: wantAi ? provider.model : null,
+      source: usedAi ? 'ai' : 'engine',
+      provider: usedAi ? provider.provider : null,
+      model: usedAi ? provider.model : null,
       count: ideas.length,
       ideas,
     };
@@ -355,6 +369,9 @@ export async function getChainWithAnalytics(symbol, expiration = null) {
     getHistory(symbol, { range: '3mo', interval: '1d' }).catch(() => null),
   ]);
   const spot = quote.price;
+  if (!Number.isFinite(spot) || spot <= 0) {
+    throw new HttpError(404, `No live price available for ${symbol}`);
+  }
   const realizedVol = history ? annualizedVolatility(history.bars.map((bar) => bar.close), 20) : null;
   const summary = summarizeChain({
     calls: chain.calls,
@@ -422,7 +439,24 @@ const compactCandidate = (plan, index) => ({
  * configured, the provider errors, or the model returns something unusable.
  */
 export async function getOptionsDesk(symbol, { ai, refresh = false, expiration = null } = {}) {
-  const analysis = await getAnalysis(symbol, { withOptions: true, refresh });
+  // getAnalysis is cached and returns the default (~35 DTE) chain. Copy the
+  // payload and re-price when the caller asked for a specific expiry, rather
+  // than silently ignoring the request or mutating the cached analysis.
+  const baseAnalysis = await getAnalysis(symbol, { withOptions: true, refresh });
+  const analysis = { ...baseAnalysis };
+  if (expiration && baseAnalysis.options?.expiration !== expiration) {
+    try {
+      analysis.options = await getOptionsPlan(symbol, analysis, expiration);
+    } catch (error) {
+      analysis.options = {
+        error: error.message,
+        plans: [],
+        summary: null,
+        expiration,
+        expirations: baseAnalysis.options?.expirations ?? null,
+      };
+    }
+  }
   const options = analysis.options || {};
   const candidates = (options.plans || []).map(compactCandidate);
   const summary = options.summary || null;

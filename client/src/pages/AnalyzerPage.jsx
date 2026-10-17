@@ -47,9 +47,15 @@ function TargetLadder({ analysis }) {
   const { plan } = analysis;
   const price = analysis.price;
   const targets = plan.targets || [];
-  const scaleMax = Math.max(price, ...targets.map((target) => target.price)) * 1.01;
-  const scaleMin = Math.min(price, plan.stopLoss || price) * 0.99;
+  // Include the stop and every target so a short plan (targets below spot,
+  // stop above) stays on the ladder instead of being clipped at spot.
+  const scaleLevels = [price, plan.stopLoss, ...targets.map((target) => target.price)].filter((value) =>
+    Number.isFinite(value),
+  );
+  const scaleMax = Math.max(...scaleLevels) * 1.01;
+  const scaleMin = Math.min(...scaleLevels) * 0.99;
   const width = (value) => `${Math.max(4, ((value - scaleMin) / (scaleMax - scaleMin || 1)) * 100)}%`;
+  const zone = plan.buyZone || plan.shortZone;
 
   return (
     <div className="target-ladder">
@@ -59,7 +65,12 @@ function TargetLadder({ analysis }) {
         <span className="mono">{money(scaleMax, 0)}</span>
       </div>
       <div className="ladder-track">
-        <div className="ladder-zone" style={{ left: width(plan.buyZone?.low ?? plan.stopLoss), width: `calc(${width(plan.buyZone?.high ?? price)} - ${width(plan.buyZone?.low ?? plan.stopLoss)})` }} />
+        {zone && (
+          <div
+            className="ladder-zone"
+            style={{ left: width(zone.low), width: `calc(${width(zone.high)} - ${width(zone.low)})` }}
+          />
+        )}
         <div className="ladder-spot" style={{ left: width(price) }} />
       </div>
       <div className="ladder-targets">
@@ -194,6 +205,37 @@ export default function AnalyzerPage({ symbol, go }) {
 
   const { plan, indicators, score, levels, fundamentals, options } = analysis;
   const bullish = plan.direction === 'long';
+  // T2 is the "main" goal the R:R and the plan cards use; T1 is the first
+  // partial-profit checkpoint on the ladder. Older payloads only have T1.
+  const firstTarget = plan.targets?.[0] ?? null;
+  const mainTarget = plan.targets?.[1] ?? plan.targets?.[0] ?? null;
+  const callLabel = analysis.alert?.actionLabel ?? 'Hold';
+  const isEntryCall = ['buy', 'accumulate'].includes(analysis.alert?.action);
+  const isExitCall = ['reduce', 'sell'].includes(analysis.alert?.action);
+  // One plain-English sentence that ties the three prices together, so a
+  // "Hold" verdict never reads like an instruction to buy at spot.
+  const planHelp = (() => {
+    if (plan.buyZone) {
+      const entry = isEntryCall
+        ? `buy between ${money(plan.buyZone.low)} and ${money(plan.buyZone.high)}`
+        : isExitCall
+          ? `the call is ${callLabel} — no new buys right now (the ${money(plan.buyZone.low)}–${money(plan.buyZone.high)} zone only matters after the trend repairs)`
+          : `the call is ${callLabel}, so don't chase — only buy on a pullback into ${money(plan.buyZone.low)}–${money(plan.buyZone.high)}`;
+      const goals = mainTarget
+        ? ` Take the first profit at T1 ${money(firstTarget?.price)}, aim for the main target T2 ${money(mainTarget?.price)}, and exit if a daily close falls below ${money(plan.stopLoss)}.`
+        : '';
+      return `In simple terms: ${entry} (planned entry ${money(plan.entryRef)} in the middle).${goals}`;
+    }
+    const zone = plan.shortZone
+      ? `there is no buy zone right now — the nearest band to sell into is ${money(plan.shortZone.low)}–${money(plan.shortZone.high)}`
+      : isExitCall
+        ? `there is no buy zone right now — the call is ${callLabel}, so the levels here are for exiting or trimming, not for a new long`
+        : 'there is no buy zone right now, so wait for a better setup';
+    const goals = mainTarget
+      ? ` ${bullish ? 'Upside targets are' : 'Downside levels are'} T1 ${money(firstTarget?.price)} and T2 ${money(mainTarget?.price)}.`
+      : '';
+    return `In simple terms: ${zone}.${goals} The idea is wrong if a daily close ${bullish ? 'falls below' : 'rises above'} ${money(plan.stopLoss)}.`;
+  })();
   const optionPlans = options?.plans || [];
   const activePlan = optionPlans[optionIndex];
   const rangePosition = levels.rangePosition ?? 50;
@@ -247,7 +289,7 @@ export default function AnalyzerPage({ symbol, go }) {
         <div className="quote-price-block">
           <div className="quote-price">{money(analysis.price)}</div>
           <div className={`quote-change ${toneForChange(analysis.changePercent)}`}>
-            {analysis.change > 0 ? '+' : ''}
+            {analysis.change > 0 ? '+' : analysis.change < 0 ? '−' : ''}
             {money(Math.abs(analysis.change))} ({pct(analysis.changePercent)})
           </div>
           <div className="quote-range">
@@ -327,8 +369,17 @@ export default function AnalyzerPage({ symbol, go }) {
                 <Stat label="Entry" value={money(aiDecision.keyLevels?.entry)} />
                 <Stat label="Target" value={money(aiDecision.keyLevels?.target)} tone="up" />
                 <Stat label="Stop" value={money(aiDecision.keyLevels?.stop)} tone="down" />
-                <Stat label="Buy above" value={money(aiDecision.triggers?.buyAbove)} tone="up" />
-                <Stat label="Sell below" value={money(aiDecision.triggers?.sellBelow)} tone="down" />
+                <Stat
+                  label={aiDecision.triggers?.buyLabel || 'Buy above'}
+                  value={money(aiDecision.triggers?.buyAbove)}
+                  tone="up"
+                />
+                <Stat
+                  label={aiDecision.triggers?.sellLabel || 'Exit below'}
+                  value={money(aiDecision.triggers?.sellBelow)}
+                  tone="down"
+                  hint={aiDecision.triggers?.sellHint}
+                />
               </div>
 
               {aiDecision.catalysts?.length > 0 && (
@@ -401,64 +452,96 @@ export default function AnalyzerPage({ symbol, go }) {
                 <div className="verdict-badges">
                   <span className={`score-chip ${scoreTone(score.total)}`}>{score.total}/100</span>
                   <span className="badge">{score.confidence}% confidence</span>
-                  <span className="badge">{plan.riskReward ?? '—'}:1 R:R</span>
+                  <span className="badge">{plan.riskReward ?? '—'}:1 R:R (to T2)</span>
                   <span className="badge">{indicators.atrPct}% ATR</span>
                 </div>
               </div>
             </div>
 
             <div className="plan-summary">
-              <div className={`plan-card ${plan.buyZone ? '' : 'muted-card'}`}>
-                <span className="plan-label">Accumulation zone</span>
+              <div className={`plan-card ${plan.buyZone || plan.shortZone ? '' : 'muted-card'}`}>
+                <span className="plan-label">
+                  {plan.buyZone ? 'Buy zone' : plan.shortZone ? 'Trim zone' : 'No zone'}
+                </span>
                 {plan.buyZone ? (
                   <>
                     <strong className="plan-value">
                       {money(plan.buyZone.low)} <span>–</span> {money(plan.buyZone.high)}
                     </strong>
-                    <span className="plan-foot">Planned entry {money(plan.entryRef)}</span>
+                    <span className="plan-foot wrap">
+                      Price range to accumulate · planned entry {money(plan.entryRef)} (middle)
+                    </span>
+                  </>
+                ) : plan.shortZone ? (
+                  <>
+                    <strong className="plan-value">
+                      {money(plan.shortZone.low)} <span>–</span> {money(plan.shortZone.high)}
+                    </strong>
+                    <span className="plan-foot wrap">
+                      {bullish
+                        ? 'Overhead band to trim an existing position'
+                        : 'Overhead band to sell into — trim or exit, not a new short'}
+                    </span>
                   </>
                 ) : (
                   <>
-                    <strong className="plan-value muted">No long entry</strong>
-                    <span className="plan-foot">
-                      {plan.shortZone ? `Trim/short ${money(plan.shortZone.low)}–${money(plan.shortZone.high)}` : 'Wait for confirmation'}
-                    </span>
+                    <strong className="plan-value muted">No zone — wait</strong>
+                    <span className="plan-foot wrap">No price range is worth entering at right now</span>
                   </>
                 )}
               </div>
               <div className="plan-card">
-                <span className="plan-label">Primary target</span>
-                <strong className="plan-value up">
-                  {money(plan.targets[1]?.price ?? plan.targets[0]?.price)}
-                  <span className="plan-upside">{pct(plan.targets[1]?.upsidePct ?? plan.targets[0]?.upsidePct)}</span>
+                <span className="plan-label">
+                  {plan.direction === 'short' ? 'Downside target (T2)' : isExitCall ? 'Trim target (T2)' : 'Main target (T2)'}
+                </span>
+                <strong className={`plan-value ${bullish ? 'up' : 'down'}`}>
+                  {money(mainTarget?.price)}
+                  <span className={`plan-upside ${bullish ? '' : 'down'}`}>
+                    {bullish ? '+' : '−'}
+                    {num(mainTarget?.upsidePct, 1)}%
+                  </span>
                 </strong>
-                <span className="plan-foot">{plan.targets[1]?.source || plan.targets[0]?.source || '—'}</span>
+                <span className="plan-foot wrap">
+                  {firstTarget && firstTarget !== mainTarget
+                    ? `First checkpoint T1 ${money(firstTarget.price, 0)} · ${mainTarget?.source || '—'}`
+                    : mainTarget?.source || '—'}
+                </span>
               </div>
               <div className="plan-card">
-                <span className="plan-label">Stop / invalidation</span>
+                <span className="plan-label">Stop loss (exit)</span>
                 <strong className="plan-value down">{money(plan.stopLoss)}</strong>
-                <span className="plan-foot">{plan.invalidation}</span>
+                <span className="plan-foot wrap">
+                  Exit if a daily close {bullish ? 'falls below' : 'rises above'} this price
+                </span>
               </div>
               <div className="plan-card">
-                <span className="plan-label">1% risk sizing (≈{money(10000, 0)})</span>
+                <span className="plan-label">Position size (1% risk)</span>
                 <strong className="plan-value">
                   {plan.riskBudgetExample?.shares ?? '—'} <span className="unit">shares</span>
                 </strong>
-                <span className="plan-foot">
-                  {money(plan.riskPerShare)} risk/share · {money(plan.riskBudgetExample?.riskDollars, 0)} budget
+                <span className="plan-foot wrap">
+                  Risking {money(plan.riskBudgetExample?.riskDollars, 0)} of {money(plan.riskBudgetExample?.accountSize, 0)} ·{' '}
+                  {money(plan.riskPerShare)} per share
                 </span>
               </div>
             </div>
+            <p className="plan-help">{planHelp}</p>
           </section>
 
           <section className="panel">
             <div className="panel-head">
               <div>
                 <div className="eyebrow">TRADE PLAN</div>
-                <h2>Target ladder</h2>
+                <h2>
+                  {plan.direction === 'short'
+                    ? 'Downside levels (T1 → T3)'
+                    : isExitCall
+                      ? 'Trim targets (T1 → T3)'
+                      : 'Profit targets (T1 → T3)'}
+                </h2>
               </div>
               <div className="chip-row">
-                <span className={`chip ${bullish ? 'long' : 'short'}`}>{bullish ? 'Long bias' : 'Short / avoid'}</span>
+                <span className={`chip ${bullish ? 'long' : 'short'}`}>{bullish ? 'Upside plan' : 'Downside plan'}</span>
                 <span className="chip">{plan.horizon}</span>
               </div>
             </div>
@@ -635,7 +718,11 @@ export default function AnalyzerPage({ symbol, go }) {
               <Stat label="ATR %" value={`${indicators.atrPct}%`} />
               <Stat label="Ann. vol" value={indicators.annualizedVolatility ? `${indicators.annualizedVolatility}%` : '—'} />
               <Stat label="Beta" value={num(indicators.beta)} />
-              <Stat label="Volume ratio" value={`${num((indicators.volumeRatio ?? 0) * 100, 0)}%`} hint="5d vs 50d average" />
+              <Stat
+                label="Volume ratio"
+                value={Number.isFinite(indicators.volumeRatio) ? `${num(indicators.volumeRatio * 100, 0)}%` : '—'}
+                hint="5d vs 50d average"
+              />
               <Stat label="SMA 20" value={money(indicators.sma20)} />
               <Stat label="SMA 50" value={money(indicators.sma50)} />
               <Stat label="SMA 200" value={money(indicators.sma200)} />

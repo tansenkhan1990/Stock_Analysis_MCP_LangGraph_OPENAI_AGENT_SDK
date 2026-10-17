@@ -10,19 +10,24 @@ function HotCard({ stock, go, ai = null }) {
   const target = stock.primaryTarget;
   const aiDecision = ai?.decision || null;
   const aiLive = Boolean(ai?.decisionMeta && ai.decisionMeta.provider !== 'rule-engine');
+  // The model owns the call once a desk pass has produced one; the mechanical
+  // verdict stays visible in the AI row as the cross-check.
+  const modelCall = aiLive && aiDecision ? aiDecision : null;
+  const call = modelCall || { action: stock.action, actionLabel: stock.actionLabel };
+  const callIsLong = ['buy', 'accumulate'].includes(call.action);
   const belowZone = stock.price < stock.buyZone.low;
   const aboveZone = stock.price > stock.buyZone.high;
   const entryHint = stock.buyNow
-    ? belowZone
-      ? 'below the entry band — check the stop'
-      : aboveZone
-        ? 'just above the zone — still actionable'
-        : 'price is in the zone now'
-    : `wait for ${money(stock.waitFor)}`;
+    ? aboveZone
+      ? 'just above the band — still usable'
+      : 'price is in the band now'
+    : belowZone
+      ? `below the band — reclaim ${money(stock.waitFor)} first`
+      : `wait for ${money(stock.waitFor)}`;
   const isEtf = stock.quoteType === 'ETF';
 
   return (
-    <article className={`hot-card ${ACTION_CLASS[stock.action] || ''} ${stock.buyNow ? 'is-now' : 'is-wait'}`}>
+    <article className={`hot-card ${ACTION_CLASS[call.action] || ''} ${callIsLong ? 'is-now' : 'is-wait'}`}>
       <header className="hot-head">
         <span className="hot-rank" title={`Rank ${stock.rank} by hot score`}>
           #{stock.rank}
@@ -41,11 +46,15 @@ function HotCard({ stock, go, ai = null }) {
       </header>
 
       <div className="hot-status-row">
-        <span className={`hot-badge ${stock.buyNow ? 'now' : 'wait'}`}>{stock.buyNow ? 'BUY NOW' : 'WAIT'}</span>
-        <span className="setup-chip">{stock.setupLabel || stock.actionLabel}</span>
+        <span className={`hot-badge ${callIsLong ? 'now' : 'wait'}`}>
+          {modelCall ? call.actionLabel.toUpperCase() : stock.buyNow ? 'BUY NOW' : 'WAIT'}
+        </span>
+        <span className="setup-chip" title={modelCall ? 'Rule-engine setup context' : undefined}>
+          {modelCall ? `⚙ ${stock.setupLabel || stock.actionLabel}` : stock.setupLabel || stock.actionLabel}
+        </span>
         <span
           className={`score-chip ${scoreTone(stock.hotScore)}`}
-          title="Hot score = 60% quality + 25% conviction + 15% entry timing"
+          title="Hot score starts with 60% quality + 25% conviction, then adds up to 15 points when the price is near the buy band"
         >
           {stock.hotScore} hot
         </span>
@@ -55,18 +64,21 @@ function HotCard({ stock, go, ai = null }) {
 
       <div className="hot-levels">
         <div className="hot-level buy">
-          <span className="hot-level-label">Buy at</span>
+          <span className="hot-level-label">Buy zone</span>
           <strong className="mono">
             {money(stock.buyZone.low, 0)}–{money(stock.buyZone.high, 0)}
           </strong>
           <span className="muted small">{entryHint}</span>
         </div>
         <div className="hot-level sell">
-          <span className="hot-level-label">Sell at</span>
+          <span className="hot-level-label">Take profit</span>
           {target ? (
             <>
               <strong className="mono">
-                {money(target.price, 0)} <span className="hot-upside">+{target.upsidePct}%</span>
+                {money(target.price, 0)}
+                {target.upsidePct !== null && target.upsidePct !== undefined && (
+                  <span className="hot-upside"> +{target.upsidePct}%</span>
+                )}
               </strong>
               <span className="muted small">
                 {target.label || 'primary target'}
@@ -82,13 +94,15 @@ function HotCard({ stock, go, ai = null }) {
 
       {stock.sellPlan.length > 1 && (
         <div className="hot-sell-plan">
-          <span className="hot-level-label">Sell ladder</span>
+          <span className="hot-level-label">Profit targets</span>
           <div className="hot-target-row">
             {stock.sellPlan.map((item) => (
               <span key={item.label || item.price} className="hot-target">
                 <span className="target-badge">{item.label || '—'}</span>
                 <span className="mono">{money(item.price, 0)}</span>
-                <span className="mono up">+{item.upsidePct}%</span>
+                {item.upsidePct !== null && item.upsidePct !== undefined && (
+                  <span className="mono up">+{item.upsidePct}%</span>
+                )}
                 {item.probability !== null && <span className="muted small">{item.probability}%</span>}
               </span>
             ))}
@@ -100,8 +114,11 @@ function HotCard({ stock, go, ai = null }) {
         <span>
           Stop <b className="mono down">{money(stock.stopLoss, 0)}</b>
         </span>
-        <span>
+        <span
+          title={`Measured from the ${money(stock.entryRef)} reference entry (middle of the buy band) to the main target (T2)`}
+        >
           R:R <b className="mono">{stock.riskReward ?? '—'}:1</b>
+          {stock.entryRef ? <span className="muted small"> to T2 from {money(stock.entryRef, 0)}</span> : null}
         </span>
         <span>
           Quality <b className="mono">{stock.score}/100</b>
@@ -131,11 +148,15 @@ function HotCard({ stock, go, ai = null }) {
           {aiDecision.thesis && <p className="hot-ai-thesis">{aiDecision.thesis}</p>}
           {aiDecision.triggers && (
             <div className="hot-ai-levels">
-              <span>
-                Buy above <b className="mono">{money(aiDecision.triggers.buyAbove)}</b>
+              <span title={aiDecision.triggers.buyHint || ''}>
+                {aiDecision.triggers.side !== 'short' && ['reduce', 'sell'].includes(aiDecision.action)
+                  ? 'Reclaim above'
+                  : aiDecision.triggers.buyLabel || 'Buy above'}{' '}
+                <b className="mono">{money(aiDecision.triggers.buyAbove)}</b>
               </span>
-              <span>
-                Sell below <b className="mono down">{money(aiDecision.triggers.sellBelow)}</b>
+              <span title={aiDecision.triggers.sellHint || ''}>
+                {aiDecision.triggers.sellLabel || 'Exit below'}{' '}
+                <b className="mono down">{money(aiDecision.triggers.sellBelow)}</b>
               </span>
               {aiDecision.keyLevels?.target ? (
                 <span>
@@ -249,9 +270,9 @@ export default function HotStocksPage({ go }) {
           <div className="eyebrow">HOT STOCKS</div>
           <h1>Buy now — and where to sell</h1>
           <p className="page-sub">
-            The whole screened US market, live from Yahoo Finance — the most active names, day gainers, growth and value
-            screens — ranked with the entry band to buy and the T1/T2/T3 prices to sell into. Every screened name is listed
-            on the market tape; the hottest {data?.depth ?? depth} get a full plan.
+            Live prices for every name the Yahoo screens return — the most active, the day's biggest gainers, growth and value
+            names. The hottest {data?.depth ?? depth} get a full plan: a price range to buy in, three prices to take profit at,
+            and a stop. Every other name still shows its live quote on the market tape below.
           </p>
         </div>
         <div className="head-actions">
@@ -315,7 +336,7 @@ export default function HotStocksPage({ go }) {
           />
           <Stat
             label="Fully analysed"
-            value={data?.scanned ?? '—'}
+            value={data?.signals ?? data?.scanned ?? '—'}
             hint="Names with a scored plan: buy zone, T1/T2/T3 sell prices and a stop"
           />
           <Stat
@@ -324,19 +345,21 @@ export default function HotStocksPage({ go }) {
             hint="Every name the Yahoo screens returned for this scan"
           />
           <Stat
-            label="Waiting for pullback"
+            label="Waiting for price"
             value={data?.waitingCount ?? '—'}
-            hint="Long setups whose price is still above the entry band"
+            hint="Long setups whose price is outside the buy band — above it, or below it after a breakdown"
           />
         </div>
         <p className="hot-method">
-          Hot score = 60% quality + 25% conviction + 15% entry timing. Buy-now means the price is at or below the top of the
-          accumulation band; names above it are listed separately with the price to wait for. <strong>All market</strong> pulls the
-          live Yahoo screens ({data?.screens?.map((screen) => screen.id.replace(/_/g, ' ')).join(', ') || 'most actives, gainers, growth, value'})
-          — {data?.universeSize ?? 0} names — and gives the hottest {data?.depth ?? depth} a full plan; the rest stay on the market
-          tape with their live quote. <strong>Curated board</strong> scans the ~40-name liquid list, <strong>My list</strong> only
-          your focus list. <strong>Run AI desk</strong> asks the configured model to review the top names and shows its buy/sell
-          call next to the engine's.
+          The hot score starts with 60% quality + 25% conviction, then adds up to 15 points when the price is inside or just
+          above the buy band. <strong>Buy now</strong> means the price is inside that band (or within 0.5% above its top). Names
+          that are not in the band are listed separately with the price to wait for: the top of the band when price is above
+          it, or the floor to reclaim when price has fallen below it. <strong>All market</strong> pulls the live Yahoo screens
+          ({data?.screens?.map((screen) => screen.id.replace(/_/g, ' ')).join(', ') || 'most actives, gainers, growth, value'})
+          — {data?.universeSize ?? 0} names — and gives the hottest {data?.depth ?? depth} a full plan; the rest stay on the
+          market tape with their live quote. <strong>Curated board</strong> scans the ~40-name liquid list,{' '}
+          <strong>My list</strong> only your focus list. <strong>Run AI desk</strong> asks the configured model to review the top
+          names and shows its call next to the engine's.
         </p>
       </section>
 
@@ -360,7 +383,7 @@ export default function HotStocksPage({ go }) {
           <div className="hot-empty-icon">⇗</div>
           <h2>No buy-now setups right now</h2>
           <p className="muted">
-            None of the {data?.scanned ?? 0} fully analysed names is a buy or accumulate setup today. That is a valid answer —
+            None of the {data?.signals ?? data?.scanned ?? 0} fully analysed names is a buy or accumulate setup today. That is a valid answer —
             raise the analysis depth above, check the market tape below for the day's movers, or analyze a different ticker.
           </p>
           <div className="hot-empty-actions">
@@ -381,7 +404,7 @@ export default function HotStocksPage({ go }) {
                   <div className="eyebrow">ENTRY TRIGGERED</div>
                   <h2>{buyNow.length} to buy now</h2>
                 </div>
-                <span className="muted small">Sell into the ladder · stop below the zone</span>
+                <span className="muted small">Take profits at the targets · stop below the buy zone</span>
               </div>
               <div className="hot-grid">
                 {buyNow.map((stock) => (
@@ -395,10 +418,10 @@ export default function HotStocksPage({ go }) {
             <section className="panel hot-panel">
               <div className="panel-head">
                 <div>
-                  <div className="eyebrow">PULLBACK WATCH</div>
+                  <div className="eyebrow">WAITING FOR PRICE</div>
                   <h2>{waiting.length} waiting for a better price</h2>
                 </div>
-                <span className="muted small">Long setups above the entry band — do not chase</span>
+                <span className="muted small">Outside the buy band — wait for the price to come to you</span>
               </div>
               <div className="hot-grid">
                 {waiting.map((stock) => (

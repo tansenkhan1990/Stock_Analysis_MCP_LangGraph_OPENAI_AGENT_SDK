@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { DEFAULT_WATCHLIST as FOCUS_WATCHLIST } from '../data/universe.js';
 
 /**
- * In-process store. MarketPilot keeps no database: the watchlist, saved
- * research snapshots and agent threads live in memory for the lifetime of the
- * server process, which keeps setup to a single `npm run dev`.
+ * In-process store for ephemeral session state: the watchlist, saved research
+ * snapshots and agent threads live in memory for the lifetime of the server
+ * process. Market data is always live; MongoDB is optional and only used for
+ * the news/deal archive (see lib/db.js).
  */
 const memory = {
   watchlist: new Map(),
@@ -13,6 +14,16 @@ const memory = {
 };
 
 const MAX_SNAPSHOTS = 200;
+const MAX_THREADS = 50;
+
+/** Keep the in-memory agent history bounded; drop the least recently used. */
+function trimThreads() {
+  if (memory.threads.size <= MAX_THREADS) return;
+  const excess = [...memory.threads.values()]
+    .sort((a, b) => new Date(a.updatedAt) - new Date(b.updatedAt))
+    .slice(0, memory.threads.size - MAX_THREADS);
+  for (const thread of excess) memory.threads.delete(thread.threadId);
+}
 
 /** The watchlist starts as the curated focus universe. */
 export const DEFAULT_WATCHLIST = FOCUS_WATCHLIST;
@@ -42,14 +53,21 @@ export async function removeWatchlist(symbol) {
 /**
  * Seed the curated focus list exactly once per process. Seeding on every
  * empty read would resurrect names the user deleted, so track it explicitly.
+ * The in-flight promise is shared so two concurrent first reads cannot return
+ * a half-seeded watchlist.
  */
-let watchlistSeeded = false;
+let seedPromise = null;
 
 export async function seedWatchlist() {
-  if (!watchlistSeeded) {
-    watchlistSeeded = true;
-    for (const item of DEFAULT_WATCHLIST) await addWatchlist(item);
+  if (!seedPromise) {
+    seedPromise = (async () => {
+      for (const item of DEFAULT_WATCHLIST) await addWatchlist(item);
+    })().catch((error) => {
+      seedPromise = null;
+      throw error;
+    });
   }
+  await seedPromise;
   return listWatchlist();
 }
 
@@ -98,6 +116,7 @@ export async function createThread({ threadId, title, provider = 'builtin' }) {
     updatedAt: new Date(),
   };
   memory.threads.set(id, thread);
+  trimThreads();
   return thread;
 }
 
@@ -120,6 +139,7 @@ export async function appendMessages(threadId, messages, { title, provider } = {
   if (title) thread.title = title;
   if (provider) thread.provider = provider;
   memory.threads.set(threadId, thread);
+  trimThreads();
 }
 
 export async function listThreads(limit = 20) {

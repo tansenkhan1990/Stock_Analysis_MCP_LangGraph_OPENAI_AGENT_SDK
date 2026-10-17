@@ -1565,12 +1565,30 @@ a {
   color: var(--up);
   margin-left: 5px;
 }
+.plan-upside.down {
+  color: var(--down);
+}
 .plan-foot {
   font-size: 9.5px;
   color: var(--muted-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Explanatory feet wrap instead of truncating, so the plain-English meaning
+   of each price stays visible on narrow cards. */
+.plan-foot.wrap {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  line-height: 1.45;
+}
+.plan-help {
+  margin: 13px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+  max-width: 92ch;
 }
 
 .target-ladder {
@@ -4137,7 +4155,10 @@ a {
 .signal-decision {
   display: flex;
   align-items: center;
-  gap: 14px;
+  /* The call pill, the setup/AI/cross-check chips and the score all live on
+     this row: wrap them rather than letting a long chip run over the card. */
+  flex-wrap: wrap;
+  gap: 8px 12px;
   padding: 11px 13px;
   border-radius: 11px;
   background: rgba(8, 14, 26, 0.55);
@@ -4185,7 +4206,9 @@ a {
 }
 
 .signal-score {
-  flex: 1;
+  /* A real basis so the conviction bar and its label never get squeezed into
+     the chips: below this the block wraps to its own line instead. */
+  flex: 1 1 150px;
   min-width: 0;
 }
 .signal-score-row {
@@ -4218,12 +4241,15 @@ a {
 
 .signal-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* Auto-fit rather than a hard 4-up: on a three-across focus grid the card is
+     ~420px wide and a fixed 4-up clipped the value text ("54 · Above average",
+     "€374 / €381 / €388"). The tiles now drop to fewer columns instead. */
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 9px;
 }
 .signal-levels {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 9px;
   padding: 11px 12px;
   border-radius: 10px;
@@ -4281,13 +4307,16 @@ a {
 
 .signal-triggers {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Two trigger boxes while they have room; stack them on narrow cards instead
+     of crushing the tag, the level and the distance into each other. */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 9px;
 }
 .signal-triggers .trigger {
   display: flex;
   align-items: center;
-  gap: 7px;
+  flex-wrap: wrap;
+  gap: 4px 7px;
   padding: 7px 10px;
   border-radius: 9px;
   border: 1px solid var(--border);

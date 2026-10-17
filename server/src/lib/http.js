@@ -4,20 +4,25 @@
  * pages — passes through one global gate with retry and backoff.
  */
 export function createGate(maxConcurrent) {
+  const limit = Math.max(1, Number(maxConcurrent) || 1);
   let active = 0;
   const waiters = [];
 
   return async function withSlot(fn) {
-    if (active >= maxConcurrent) {
+    if (active < limit) {
+      active += 1;
+    } else {
+      // Hand the slot straight to the next waiter: the releasing call must not
+      // decrement first, or a new caller can slip in before the woken waiter
+      // resumes and push the gate above its limit.
       await new Promise((resolve) => waiters.push(resolve));
     }
-    active += 1;
     try {
       return await fn();
     } finally {
-      active -= 1;
       const next = waiters.shift();
       if (next) next();
+      else active -= 1;
     }
   };
 }
@@ -50,22 +55,24 @@ export async function fetchText(
   let lastError;
 
   for (let attempt = 0; attempt < retries; attempt += 1) {
+    let response;
     try {
-      const response = await gate(() =>
+      response = await gate(() =>
         fetch(url, { headers, signal: AbortSignal.timeout(timeout), redirect: 'follow' }),
       );
-
-      if (response.ok) return await response.text();
-
-      if (!RETRYABLE(response.status) || attempt === retries - 1) {
-        throw new Error(`HTTP ${response.status} for ${url}`);
-      }
-      lastError = new Error(`HTTP ${response.status}`);
     } catch (error) {
+      // Timeouts and network blips are worth retrying; a non-retryable HTTP
+      // status is not, so the two paths are handled separately.
       lastError = error;
       if (attempt === retries - 1) break;
+      await sleep(500 * 2 ** attempt + Math.random() * 400);
+      continue;
     }
 
+    if (response.ok) return await response.text();
+
+    lastError = new Error(`HTTP ${response.status} for ${url}`);
+    if (!RETRYABLE(response.status) || attempt === retries - 1) break;
     await sleep(500 * 2 ** attempt + Math.random() * 400);
   }
 

@@ -59,6 +59,35 @@ test('conflicting 50/200-day structure is reduce', () => {
   assert.equal(alert.setup, 'transition');
 });
 
+test('a hold is invalidated by the stop, not by a break above the 20-day it already cleared', () => {
+  const alert = buildAlert({ analysis: analysis({ indicators: { rsi14: 74 } }) });
+  assert.equal(alert.action, 'hold');
+  assert.ok(alert.invalidations.some((item) => /daily close below the stop at 92 turns this into an exit/i.test(item)));
+  assert.ok(alert.invalidations.some((item) => /momentum reset/i.test(item)));
+  assert.ok(!alert.invalidations.some((item) => /above the 20-day/i.test(item)));
+
+  const withZone = buildAlert({
+    analysis: { ...analysis({ indicators: { rsi14: 74 } }), plan: { stopLoss: 92, riskReward: 2.4, buyZone: { low: 94, high: 97 } } },
+  });
+  assert.ok(withZone.invalidations.some((item) => /pullback into 94–97/i.test(item)));
+});
+
+test('the caution is cancelled at the level that actually matters for the trend state', () => {
+  // Price above the 200-day but the 50-day below it: the 200-day reclaim is
+  // already true, so the invalidation has to be the 50-day, not the 200-day.
+  const above = buildAlert({
+    analysis: analysis({ price: 85, indicators: { sma50: 78, sma200: 80, rsi14: 50 } }),
+  });
+  assert.ok(above.invalidations.some((item) => /above the 50-day at 78/i.test(item)));
+  assert.ok(!above.invalidations.some((item) => /reclaim of the 200-day/i.test(item)));
+
+  // Price below the 200-day: reclaiming it is what neutralises the exit.
+  const below = buildAlert({
+    analysis: analysis({ price: 70, indicators: { sma50: 78, sma200: 80, rsi14: 40 } }),
+  });
+  assert.ok(below.invalidations.some((item) => /reclaim of the 200-day at 80/i.test(item)));
+});
+
 test('an imminent earnings date blocks a fresh buy', () => {
   const alert = buildAlert({
     analysis: analysis(),

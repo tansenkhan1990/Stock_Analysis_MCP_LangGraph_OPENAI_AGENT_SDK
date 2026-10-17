@@ -654,14 +654,14 @@ export default function OptionsLabPage({ symbol, go }) {
                         </td>
                         <td className={`mono ${row.call?.inTheMoney ? 'itm' : ''}`}>{row.call ? num(row.call.bid) : '—'}</td>
                         <td className="mono">{row.call ? num(row.call.ask) : '—'}</td>
-                        <td className="mono">{row.call ? `${(row.call.impliedVolatility * 100).toFixed(0)}%` : '—'}</td>
+                        <td className="mono">{row.call?.impliedVolatility != null ? `${(row.call.impliedVolatility * 100).toFixed(0)}%` : '—'}</td>
                         <td className="mono">{row.call ? compact(row.call.openInterest) : '—'}</td>
                         <td className={`strike-cell mono ${atm ? 'atm' : ''}`}>
                           {row.strike}
                           {atm && <span className="atm-tag">ATM</span>}
                         </td>
                         <td className="mono">{row.put ? compact(row.put.openInterest) : '—'}</td>
-                        <td className="mono">{row.put ? `${(row.put.impliedVolatility * 100).toFixed(0)}%` : '—'}</td>
+                        <td className="mono">{row.put?.impliedVolatility != null ? `${(row.put.impliedVolatility * 100).toFixed(0)}%` : '—'}</td>
                         <td className={`mono ${row.put?.inTheMoney ? 'itm' : ''}`}>{row.put ? num(row.put.bid) : '—'}</td>
                         <td className="mono">{row.put ? num(row.put.ask) : '—'}</td>
                         <td>
@@ -801,10 +801,10 @@ export default function OptionsLabPage({ symbol, go }) {
                   <Stat label="Return on risk" value={metrics.returnOnRisk ? `${metrics.returnOnRisk}×` : '—'} />
                   <Stat label="Breakeven" value={metrics.breakevens.map((value) => usd(value)).join(' / ') || '—'} />
                   <Stat label="Est. PoP" value={metrics.probabilityOfProfit !== null ? `${metrics.probabilityOfProfit}%` : '—'} />
-                  <Stat label="Delta" value={num(metrics.greeks.delta, 2)} />
-                  <Stat label="Theta / day" value={usd(metrics.greeks.theta, 2)} />
+                  <Stat label="Delta (per share)" value={num(metrics.greeks.delta, 2)} />
+                  <Stat label="Theta / day (1 contract)" value={usd(metrics.greeks.theta * 100, 2)} />
                   {metrics.stockCost ? <Stat label="Stock cost" value={usd(metrics.stockCost, 0)} /> : null}
-                  <Stat label="Vega" value={num(metrics.greeks.vega, 2)} />
+                  <Stat label="Vega (1 contract, per vol pt)" value={usd(metrics.greeks.vega * 100, 2)} />
                 </div>
                 <PayoffChart curve={metrics.curve} breakevens={metrics.breakevens} spot={spot} height={210} nativeCurrency />
                 <p className="builder-disclaimer">

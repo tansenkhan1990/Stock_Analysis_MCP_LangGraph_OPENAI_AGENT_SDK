@@ -259,7 +259,11 @@ export function normalizeDecision(parsed, fallback, context = {}) {
       target: priceOr(levels.target, fallback?.keyLevels?.target ?? null),
       stop: priceOr(levels.stop, fallback?.keyLevels?.stop ?? null),
     },
-    triggers: buildTriggers(parsed, fallback, { price: hasPrice ? price : null, round }),
+    triggers: buildTriggers(parsed, fallback, {
+      price: hasPrice ? price : null,
+      round,
+      buyZone: context.buyZone ?? null,
+    }),
     optionsIdea: parsed.optionsIdea
       ? {
           name: String(parsed.optionsIdea.name || 'Defined-risk structure').slice(0, 120),
@@ -285,17 +289,28 @@ export function normalizeDecision(parsed, fallback, context = {}) {
 
 /**
  * Merge the model's trigger prices into the rule-engine triggers, but only when
- * they land on the correct side of spot. Stale notes and distances are rebuilt
- * so the card never shows a level and a description that disagree.
+ * they land on the correct side of spot: a "buy above" level belongs at or
+ * above spot, and an exit cannot sit inside the accumulation range — either one
+ * would print a level that contradicts its own label. Stale notes and distances
+ * are rebuilt so the card never shows a level and a description that disagree.
  */
-function buildTriggers(parsed, fallback, { price, round }) {
+function buildTriggers(parsed, fallback, { price, round, buyZone = null }) {
   const base = fallback?.triggers ? { ...fallback.triggers } : null;
   if (!base) return null;
 
   const buyOverride = priceOr(parsed.triggers?.buyAbove);
   const sellOverride = priceOr(parsed.triggers?.sellBelow);
-  const buyValid = buyOverride !== null && (!price || buyOverride >= price * 0.99);
-  const sellValid = sellOverride !== null && (!price || sellOverride < price);
+  const zoneFloor = Number.isFinite(buyZone?.low) ? buyZone.low : null;
+  const targetBelow = Number.isFinite(base.firstTarget) ? base.firstTarget : null;
+  const buyValid = buyOverride !== null && (!price || buyOverride >= price);
+  // A long's lower level is an exit (must clear the buy band); a short's is the
+  // breakdown entry, which must stay above the first target it plans to take.
+  const sellValid =
+    sellOverride !== null &&
+    (!price || sellOverride < price) &&
+    (base.side === 'short'
+      ? targetBelow === null || sellOverride > targetBelow
+      : zoneFloor === null || sellOverride <= zoneFloor);
 
   if (buyValid) {
     base.buyAbove = buyOverride;
@@ -305,10 +320,22 @@ function buildTriggers(parsed, fallback, { price, round }) {
   }
   if (sellValid) {
     base.sellBelow = sellOverride;
+    // A moved exit level can stop being the planned stop, so the "this is a
+    // protective stop, not a target" wording is re-derived instead of inherited.
+    base.exitIsStop = round(base.sellBelow) === round(base.stop);
+    base.sellLabel = base.side === 'short' ? 'BREAKDOWN BELOW' : 'EXIT BELOW';
+    base.sellHint =
+      base.side === 'short'
+        ? `A close below this confirms the downtrend; the call is an exit, not a short recommendation. Profit targets (T1 ${base.firstTarget ?? '—'}) sit below it, stop above ${base.stop}`
+        : base.exitIsStop
+          ? 'Protective stop-loss exit, not a sell target — the profit targets are above spot'
+          : 'Exit on weakness, not a sell target — the profit targets are above spot';
     base.sellNote =
       base.side === 'short'
-        ? `LLM trigger: breakdown below ${sellOverride} — short stop above ${base.stop}`
-        : `LLM trigger: exit below ${sellOverride} — hard stop ${base.stop}`;
+        ? `LLM trigger: breakdown below ${sellOverride} — a close above ${base.stop} cancels the bearish read`
+        : base.exitIsStop
+          ? `LLM trigger: exit below ${sellOverride} (the planned stop)`
+          : `LLM trigger: exit below ${sellOverride} — hard stop ${base.stop}`;
   }
   if (price) {
     base.distanceToBuyPct = round(((base.buyAbove - price) / price) * 100, 2);
@@ -332,8 +359,12 @@ export async function decideWithLLM({ dossier, fallback }) {
   });
   const parsed = parseDecisionJson(result.content);
   if (!parsed) throw new Error('The model did not return parseable JSON');
-  const decision = normalizeDecision(parsed, fallback, { price: Number(dossier?.price) });
+  const decision = normalizeDecision(parsed, fallback, {
+    price: Number(dossier?.price),
+    buyZone: dossier?.technical?.buyZone ?? null,
+  });
   decision.alertAction = fallback?.alert?.action ?? null;
+  decision.alertActionLabel = fallback?.actionLabel ?? null;
   decision.alertSetup = fallback?.alert?.setupLabel ?? null;
   decision.alertDisagrees = Boolean(decision.alertAction && decision.action !== decision.alertAction);
   return {

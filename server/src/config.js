@@ -82,4 +82,23 @@ export const config = {
   },
 };
 
-export const hasLLM = ['openai', 'anthropic', 'gemini', 'ollama'].includes(config.llm.provider);
+/**
+ * A provider is only "live" when it can actually be called. An explicit
+ * LLM_PROVIDER with no key would otherwise make every surface claim an LLM is
+ * active and then fail on every request instead of using the rule engine.
+ */
+export const hasLLM = (() => {
+  switch (config.llm.provider) {
+    case 'openai':
+      return Boolean(config.llm.openai.apiKey);
+    case 'anthropic':
+      return Boolean(config.llm.anthropic.apiKey);
+    case 'gemini':
+      return Boolean(config.llm.gemini.apiKey);
+    case 'ollama':
+      // Ollama is local and keyless; a configured base URL is enough to try it.
+      return Boolean(config.llm.ollama.baseUrl);
+    default:
+      return false;
+  }
+})();

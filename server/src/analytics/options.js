@@ -12,6 +12,7 @@ const CONTRACT_SIZE = 100;
 
 export function daysToExpiry(expiration, now = Date.now()) {
   const expiry = new Date(`${expiration}T20:00:00Z`).getTime();
+  if (!Number.isFinite(expiry)) return 0;
   return Math.max(0, Math.ceil((expiry - now) / 86_400_000));
 }
 
@@ -158,17 +159,29 @@ export function summarizeChain({ calls, puts, spot, expiration, realizedVol = nu
 
 // ---------- Payoff engine ----------
 export function evaluateStrategy(legs, spot, { iv = 0.3, dte = 30 } = {}) {
+  spot = Number(spot);
+  if (!Number.isFinite(spot) || spot <= 0) return null;
   const strikes = legs.map((leg) => leg.strike).filter((strike) => Number.isFinite(strike));
   if (!strikes.length) return null;
+
+  // Callers (the API and the agent tools) can pass a negative or non-numeric
+  // IV/DTE. Normalise both before they reach the probability integral, where a
+  // negative sigma would silently invert every probability.
+  const ivInput = Number(iv);
+  const vol = Number.isFinite(ivInput) && ivInput > 0 ? Math.min(ivInput, 5) : 0.3;
+  const dteInput = Number(dte);
+  const days = Number.isFinite(dteInput) ? Math.min(Math.max(Math.round(dteInput), 1), 730) : 30;
 
   const minStrike = Math.min(...strikes);
   const maxStrike = Math.max(...strikes);
   const hasStock = legs.some((leg) => leg.kind === 'stock');
-  // With a stock leg the true downside is a price of zero, so anchor the grid
-  // there instead of truncating the loss profile.
-  const low = hasStock ? 0 : Math.max(0.01, Math.min(minStrike * 0.7, spot * 0.6));
+  const hasPut = legs.some((leg) => leg.kind === 'put');
+  // A stock leg or any put can reach its true maximum at a price of zero (short
+  // puts carry their full strike risk there, long puts their full payoff), so
+  // anchor the grid at zero instead of truncating the risk profile.
+  const low = hasStock || hasPut ? 0 : Math.max(0.01, Math.min(minStrike * 0.7, spot * 0.6));
   const high = Math.max(maxStrike * 1.3, spot * 1.4);
-  const steps = 161;
+  const steps = hasStock || hasPut ? 241 : 161;
   const grid = Array.from({ length: steps }, (_, i) => low + ((high - low) * i) / (steps - 1));
 
   let optionsCash = 0; // > 0 means option premium credited
@@ -219,7 +232,7 @@ export function evaluateStrategy(legs, spot, { iv = 0.3, dte = 30 } = {}) {
     }
   }
 
-  const years = Math.max(dte, 1) / 365;
+  const years = days / 365;
   const greeks = legs.reduce(
     (acc, leg) => {
       if (leg.kind === 'stock') {
@@ -231,7 +244,7 @@ export function evaluateStrategy(legs, spot, { iv = 0.3, dte = 30 } = {}) {
         spot,
         strike: leg.strike,
         years,
-        iv: leg.iv || iv,
+        iv: leg.iv || vol,
       });
       const sign = (leg.action === 'sell' ? -1 : 1) * (leg.qty ?? 1);
       acc.delta += (greek.delta || 0) * sign;
@@ -243,23 +256,32 @@ export function evaluateStrategy(legs, spot, { iv = 0.3, dte = 30 } = {}) {
     { delta: 0, gamma: 0, theta: 0, vega: 0 },
   );
 
-  // Probability of profit at expiry using a lognormal approximation.
-  const sigma = iv * Math.sqrt(years);
+  // Probability of profit at expiry using a lognormal approximation. The payoff
+  // is piecewise linear, so profitable regions are the intervals between
+  // breakevens. Integrating each interval (rather than assuming "between the
+  // two breakevens") is what makes a long straddle, which profits OUTSIDE its
+  // breakevens, report its probability of profit instead of its probability of
+  // loss. Stock legs still report null because the funding cost/assignment
+  // assumptions are not in this model.
+  const sigma = vol * Math.sqrt(years);
   const mu = Math.log(spot) - (sigma * sigma) / 2;
-  const probabilityBelow = (price) => normCdf((Math.log(Math.max(price, 0.0001)) - mu) / (sigma || 1));
+  const probabilityBelow = (price) =>
+    normCdf((Math.log(Math.max(price, 0.0001)) - mu) / (sigma || 1));
   let probabilityOfProfit = null;
-  if (legs.some((leg) => leg.kind === 'stock')) {
-    probabilityOfProfit = null;
-  } else if (breakevens.length === 1) {
-    const direction = greeks.delta >= 0 ? 'up' : 'down';
-    probabilityOfProfit =
-      direction === 'up' ? 1 - probabilityBelow(breakevens[0]) : probabilityBelow(breakevens[0]);
-  } else if (breakevens.length >= 2) {
-    const lower = Math.min(...breakevens);
-    const upper = Math.max(...breakevens);
-    probabilityOfProfit = probabilityBelow(upper) - probabilityBelow(lower);
-  } else if (maxLoss < 0 && maxProfit > 0) {
-    probabilityOfProfit = null;
+  if (!legs.some((leg) => leg.kind === 'stock') && Number.isFinite(spot) && spot > 0) {
+    const bounds = [0, ...breakevens.slice().sort((a, b) => a - b), Infinity];
+    let probability = 0;
+    for (let i = 1; i < bounds.length; i += 1) {
+      const lower = bounds[i - 1];
+      const upper = bounds[i];
+      // No further crossing exists inside the interval, so one sample (above
+      // the last breakeven the sign is constant) classifies the whole region.
+      const sample = Number.isFinite(upper) ? (lower + upper) / 2 : lower + Math.max(spot, 1);
+      if (payoffAt(sample) <= 0) continue;
+      probability +=
+        (Number.isFinite(upper) ? probabilityBelow(upper) : 1) - probabilityBelow(lower);
+    }
+    probabilityOfProfit = Math.min(1, Math.max(0, probability));
   }
 
   return {
@@ -370,16 +392,18 @@ export function buildOptionPlans({
       const longPut = pickContract(chain.puts, (shortPut?.strike ?? shortPutStrike) - (atrValue || spot * 0.03) * 1.5, {
         side: 'below',
       });
-      pushPlan(
-        'Bull put spread',
-        `Rich implied volatility and a ${actionLabel || 'buy'} setup — get paid to buy the dip at support while capping downside risk.`,
-        [shortPut && legFrom(shortPut, 'put', 'sell'), longPut && legFrom(longPut, 'put', 'buy')],
-        [
-          `Short strike near support ${support ? `$${round(support)}` : '5% below spot'}`,
-          ivRich ? 'IV is above realised volatility, favouring premium selling' : '',
-        ].filter(Boolean),
-        'bullish',
-      );
+      if (shortPut && longPut && longPut.strike < shortPut.strike) {
+        pushPlan(
+          'Bull put spread',
+          `Rich implied volatility and a ${actionLabel || 'buy'} setup — get paid to buy the dip at support while capping downside risk.`,
+          [legFrom(shortPut, 'put', 'sell'), legFrom(longPut, 'put', 'buy')],
+          [
+            `Short strike near support ${support ? `$${round(support)}` : '5% below spot'}`,
+            ivRich ? 'IV is above realised volatility, favouring premium selling' : '',
+          ].filter(Boolean),
+          'bullish',
+        );
+      }
       if (atmCall && spreadExit && spreadExit.strike > atmCall.strike) {
         pushPlan(
           'Bull call spread (alternative)',
@@ -419,13 +443,15 @@ export function buildOptionPlans({
       const longCall = pickContract(chain.calls, (shortCall?.strike ?? resistance) + (atrValue || spot * 0.03) * 1.5, {
         side: 'above',
       });
-      pushPlan(
-        'Bear call spread',
-        `${actionLabel ? `${actionLabel[0].toUpperCase()}${actionLabel.slice(1)}` : 'Bearish'} alert plus rich IV — sell rallies into resistance with capped risk above.`,
-        [shortCall && legFrom(shortCall, 'call', 'sell'), longCall && legFrom(longCall, 'call', 'buy')],
-        [],
-        'bearish',
-      );
+      if (shortCall && longCall && longCall.strike > shortCall.strike) {
+        pushPlan(
+          'Bear call spread',
+          `${actionLabel ? `${actionLabel[0].toUpperCase()}${actionLabel.slice(1)}` : 'Bearish'} alert plus rich IV — sell rallies into resistance with capped risk above.`,
+          [legFrom(shortCall, 'call', 'sell'), legFrom(longCall, 'call', 'buy')],
+          [],
+          'bearish',
+        );
+      }
     }
     if (atmPut && spreadExit && spreadExit.strike < atmPut.strike) {
       pushPlan(

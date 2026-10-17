@@ -73,6 +73,22 @@ test('a downtrend below VWAP produces a short plan with downside targets', () =>
   }
 });
 
+test('a low-priced name still gets a non-zero risk plan', () => {
+  // At ~$0.85, rounding the stop to cents used to land it on the entry price
+  // and publish a plan with 0 risk and three identical targets.
+  const bars = [
+    ...makeSession('2026-10-15', 0.78, 0.0004),
+    ...makeSession('2026-10-16', 0.81, 0.0005),
+  ];
+  const result = buildDayTrade({ quote: quoteFor(bars), history: { bars } });
+
+  assert.ok(result.plan, 'expected an actionable plan');
+  assert.ok(result.plan.riskPerShare > 0, `risk/share was ${result.plan.riskPerShare}`);
+  for (const target of result.plan.targets) {
+    assert.ok(target.price > result.plan.entry, `${target.label} must sit above the entry`);
+  }
+});
+
 test('scoreSetup separates long, short and no-trade conditions', () => {
   const bullish = scoreSetup({
     price: 108,

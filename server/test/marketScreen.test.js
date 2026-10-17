@@ -41,6 +41,21 @@ test('the market tape merges overlapping screens, keeps the richest quote and ta
   assert.equal(tape.sources.length, 2);
 });
 
+test('a repeated symbol keeps the most active snapshot, not the first screen it appeared in', () => {
+  const tape = buildMarketTape({
+    screens: [
+      { id: 'day_gainers', quotes: [quote('NVDA', { volume: 1_000_000, changePercent: 9 })] },
+      { id: 'most_actives', quotes: [quote('NVDA', { volume: 6_000_000, changePercent: 2 })] },
+    ],
+  });
+
+  const nvda = tape.rows.find((row) => row.symbol === 'NVDA');
+  assert.equal(nvda.volume, 6_000_000);
+  assert.equal(nvda.relativeVolume, 6);
+  assert.equal(nvda.changePercent, 2, 'relative volume and day move come from the same quote');
+  assert.deepEqual(nvda.sources.sort(), ['day_gainers', 'most_actives']);
+});
+
 test('cheap, illiquid, foreign and non-equity quotes never reach the tape', () => {
   assert.equal(isTradeableQuote(quote('PENNY', { price: 1.2 })), false);
   assert.equal(isTradeableQuote(quote('THIN', { averageVolume: 20_000 })), false);

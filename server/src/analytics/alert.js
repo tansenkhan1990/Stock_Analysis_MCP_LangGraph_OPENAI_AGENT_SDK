@@ -177,10 +177,24 @@ export function buildAlert({ analysis, news = null, newsHistory = null, analyst 
     invalidations.push(`A daily close below the stop at ${round(analysis?.plan?.stopLoss)} invalidates the setup.`);
     invalidations.push('Earnings inside the holding window, or two consecutive distribution days, argue for smaller size.');
   } else if (action === 'hold') {
-    invalidations.push('A close back above the 20-day average with volume would re-open the entry case.');
-    invalidations.push(`Losing ${round(analysis?.plan?.stopLoss)} turns this into an exit.`);
+    // A hold is not "wait for a break above the 20-day": in an extended uptrend
+    // price already sits above it. The honest invalidation is the stop below,
+    // plus the reset that would make the entry interesting again.
+    const buyZone = analysis?.plan?.buyZone;
+    invalidations.push(`A daily close below the stop at ${round(analysis?.plan?.stopLoss)} turns this into an exit.`);
+    invalidations.push(
+      buyZone
+        ? `A pullback into ${round(buyZone.low)}–${round(buyZone.high)} with the 200-day still rising would re-open the entry case.`
+        : 'A momentum reset (RSI back under 60) without losing the 200-day would make a new entry interesting.',
+    );
   } else if (action === 'sell' || action === 'reduce') {
-    invalidations.push(`A reclaim of the 200-day at ${round(sma200)} on volume would neutralise the exit signal.`);
+    // The level that would cancel the caution depends on where price sits: a
+    // reclaim of the 200-day only matters when price is below it.
+    invalidations.push(
+      above200
+        ? `A close back above the 50-day at ${round(sma50)} with the 50-day turning up would neutralise the caution.`
+        : `A reclaim of the 200-day at ${round(sma200)} on volume would neutralise the exit signal.`,
+    );
     invalidations.push('This is a risk rule: in the five-year replay, trend breaks were followed by average returns close to the market, not by systematic declines.');
   }
 

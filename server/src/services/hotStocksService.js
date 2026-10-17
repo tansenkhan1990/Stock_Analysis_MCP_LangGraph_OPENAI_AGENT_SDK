@@ -15,7 +15,7 @@ import { scanSymbols } from './analysisService.js';
 
 export const MAX_HOT_UNIVERSE = 48;
 export const HOT_SCOPES = ['market', 'broad', 'focus'];
-export const HOT_DEPTHS = [40, DEFAULT_DEPTH, 100, MAX_DEPTH];
+export const HOT_DEPTHS = [40, 60, DEFAULT_DEPTH, MAX_DEPTH];
 
 const normalizeSymbols = (symbols = []) => [
   ...new Set(
@@ -106,7 +106,10 @@ export async function getHotStocks({
 
     const ranked = rankHotStocks(scan.signals);
     const bySymbol = new Map(ranked.stocks.map((stock) => [stock.symbol, stock]));
-    const analysed = new Set(scan.universe);
+    // `scan.universe` is what we asked for; `scan.signals` is what actually
+    // produced a scored plan. A failed symbol must show "not analysed", not
+    // "no long setup".
+    const analysed = new Set(scan.signals.map((signal) => signal.symbol));
 
     // The tape carries every screened name; analysed names also carry their
     // action, buy zone and sell ladder.

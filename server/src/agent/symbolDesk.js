@@ -15,6 +15,29 @@ const RULE_META = { provider: 'rule-engine', model: 'MarketPilot rule engine', c
 
 export const ruleEngineMeta = () => ({ ...RULE_META });
 
+const decisionKey = (symbol) => `decision:${symbol}`;
+
+/**
+ * Read a desk call that has already been computed, without triggering a new
+ * one. The focus board shows these as its decisions, so a board load never
+ * displays the mechanical call for a name the model has already ruled on.
+ */
+export function peekDecision(symbol) {
+  const cached = cache.get(decisionKey(symbol));
+  if (!cached?.decision) return null;
+  return { decision: cached.decision, decisionMeta: { ...cached.decisionMeta, cached: true } };
+}
+
+/**
+ * Layer a desk call over the mechanical decision, the way every surface does:
+ * the model owns the call, the engine keeps supplying the quality score, the
+ * setup context and the fallback fields the model did not return.
+ */
+export function withDeskDecision(engineDecision, desk) {
+  if (!desk?.decision) return engineDecision;
+  return { ...engineDecision, ...desk.decision };
+}
+
 /**
  * @returns {{ decision: object|null, decisionMeta: object, decisionError: string|null }}
  */
@@ -40,7 +63,7 @@ export async function symbolAiDecision({
     };
   }
 
-  const key = `decision:${symbol}`;
+  const key = decisionKey(symbol);
   if (refresh) cache.clear(key);
 
   const cached = cache.get(key);

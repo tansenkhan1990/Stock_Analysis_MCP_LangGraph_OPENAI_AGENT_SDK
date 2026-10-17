@@ -42,6 +42,15 @@ test('a buy signal inside its zone is marked buy-now and scored with a timing bo
   assert.match(stock.why, /14% to T2/);
 });
 
+test('a price below the buy band is a broken setup, never buy-now', () => {
+  const stock = buildHotStock({ ...baseSignal, price: 90 });
+  assert.equal(stock.buyNow, false);
+  assert.equal(stock.belowZone, true);
+  // The level to reclaim is the floor of the band, not its higher ceiling.
+  assert.equal(stock.waitFor, 96);
+  assert.equal(stock.hotScore, 60, 'no timing bonus below the band');
+});
+
 test('a signal above its zone waits for the pullback instead of buying now', () => {
   const stock = buildHotStock({ ...baseSignal, price: 110 });
   assert.equal(stock.buyNow, false);

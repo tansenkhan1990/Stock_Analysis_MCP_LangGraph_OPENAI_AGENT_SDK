@@ -10,6 +10,8 @@ const TOOL_LABELS = {
   get_price_history: 'Price history',
   get_option_chain: 'Option chain',
   get_news: 'News',
+  get_research_digest: 'Research digest',
+  get_focus_board: 'Focus board',
   compare_symbols: 'Compare',
   search_symbol: 'Symbol search',
   get_market_overview: 'Market overview',

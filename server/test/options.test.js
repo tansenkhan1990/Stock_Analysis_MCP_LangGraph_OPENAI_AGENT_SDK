@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { blackScholes, buildOptionPlans, evaluateStrategy, summarizeChain } from '../src/analytics/options.js';
+import {
+  blackScholes,
+  buildOptionPlans,
+  daysToExpiry,
+  evaluateStrategy,
+  summarizeChain,
+} from '../src/analytics/options.js';
 
 const leg = (kind, action, strike, premium, qty = 1) => ({ kind, action, strike, premium, qty });
 
@@ -21,6 +27,39 @@ test('long call has capped loss, unlimited upside and correct breakeven', () => 
   assert.deepEqual(metrics.breakevens, [105]);
   assert.ok(metrics.greeks.delta > 0);
   assert.ok(metrics.probabilityOfProfit > 0 && metrics.probabilityOfProfit < 100);
+});
+
+test('a long put reports the payoff at zero, not a truncated grid edge', () => {
+  const metrics = evaluateStrategy([leg('put', 'buy', 100, 5)], 100, { iv: 0.3, dte: 30 });
+  // Full intrinsic at a price of zero is 100 × $100 = $10,000, minus the $500
+  // premium. The old grid stopped at 0.6 × spot and reported $3,500.
+  assert.equal(metrics.maxProfit, 9500);
+  assert.equal(metrics.maxProfitUnbounded, false);
+  assert.deepEqual(metrics.breakevens, [95]);
+});
+
+test('a naked short put reports its true loss at zero', () => {
+  const metrics = evaluateStrategy([leg('put', 'sell', 100, 5)], 100, { iv: 0.3, dte: 30 });
+  assert.equal(metrics.maxLoss, -9500);
+  assert.equal(metrics.maxLossUnbounded, false);
+});
+
+test('bad IV/DTE inputs are normalised instead of inverting the probability', () => {
+  const good = evaluateStrategy([leg('call', 'buy', 100, 5)], 100, { iv: 0.3, dte: 30 });
+  const badIv = evaluateStrategy([leg('call', 'buy', 100, 5)], 100, { iv: -0.3, dte: 30 });
+  assert.deepEqual(badIv.breakevens, good.breakevens);
+  assert.equal(badIv.probabilityOfProfit, good.probabilityOfProfit);
+  assert.deepEqual(badIv.greeks, good.greeks);
+
+  // A negative DTE is floored to one day rather than producing a negative sigma.
+  const badDte = evaluateStrategy([leg('call', 'buy', 100, 5)], 100, { iv: 0.3, dte: -5 });
+  assert.ok(Number.isFinite(badDte.probabilityOfProfit));
+  assert.ok(badDte.probabilityOfProfit >= 0 && badDte.probabilityOfProfit <= 100);
+  assert.ok(Number.isFinite(badDte.greeks.delta));
+});
+
+test('an invalid expiry string yields 0 DTE instead of NaN', () => {
+  assert.equal(daysToExpiry('not-a-date'), 0);
 });
 
 test('bull call spread has defined max profit, max loss and one breakeven', () => {
@@ -46,6 +85,33 @@ test('covered call shows stock protection and capped upside', () => {
   assert.equal(metrics.maxProfit, 1300);
   assert.equal(metrics.maxLossUnbounded, false);
   assert.ok(metrics.breakevens.includes(97));
+});
+
+test('probability of profit integrates every profitable region, not just the gap between breakevens', () => {
+  // A long straddle profits OUTSIDE its two breakevens. The old shortcut
+  // reported P(between the breakevens), which is this trade's probability of
+  // LOSS (~76%) rather than its probability of profit (~24%).
+  const straddle = evaluateStrategy(
+    [leg('call', 'buy', 100, 5), leg('put', 'buy', 100, 5)],
+    100,
+    { iv: 0.3, dte: 30 },
+  );
+  assert.deepEqual(straddle.breakevens, [90, 110]);
+  assert.ok(straddle.probabilityOfProfit < 40, `PoP ${straddle.probabilityOfProfit}%`);
+  assert.ok(straddle.probabilityOfProfit > 10, `PoP ${straddle.probabilityOfProfit}%`);
+
+  // The same rule must still put an iron condor's profit INSIDE the breakevens.
+  const condor = evaluateStrategy(
+    [
+      leg('put', 'buy', 80, 1.2),
+      leg('put', 'sell', 90, 3),
+      leg('call', 'sell', 110, 3.2),
+      leg('call', 'buy', 120, 1.4),
+    ],
+    100,
+    { iv: 0.28, dte: 35 },
+  );
+  assert.ok(condor.probabilityOfProfit > 40, `PoP ${condor.probabilityOfProfit}%`);
 });
 
 test('iron condor is a net credit with two breakevens', () => {
@@ -123,6 +189,26 @@ test('option structures follow the alert, not the technical score band', () => {
   const holdRich = buildOptionPlans(planInput('hold', { realizedVol: 20 }));
   assert.equal(holdRich.plans[0]?.name, 'Iron condor');
   assert.equal(holdRich.plans[0]?.bias, 'neutral');
+});
+
+test('a spread whose long leg collapses onto the short strike is dropped, not shipped', () => {
+  // Support below the lowest listed put makes the rich-IV bull put spread pick
+  // the same strike twice (sell 80 / buy 80) — that is not a spread.
+  const bull = buildOptionPlans(planInput('buy', { realizedVol: 20, support: 70 }));
+  assert.ok(bull.plans.length > 0);
+  for (const plan of bull.plans) {
+    const strikes = plan.legs.map((item) => `${item.kind}:${item.strike}`);
+    assert.equal(new Set(strikes).size, strikes.length, `${plan.name} repeats a strike`);
+  }
+
+  // The mirror case: resistance above the highest listed call.
+  const bear = buildOptionPlans(
+    planInput('sell', { score: 30, direction: 'short', realizedVol: 20, resistance: 130 }),
+  );
+  for (const plan of bear.plans) {
+    const strikes = plan.legs.map((item) => `${item.kind}:${item.strike}`);
+    assert.equal(new Set(strikes).size, strikes.length, `${plan.name} repeats a strike`);
+  }
 });
 
 test('chain summary computes PCR, max pain and expected move', () => {

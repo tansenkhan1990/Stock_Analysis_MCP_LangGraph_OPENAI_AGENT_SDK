@@ -34,11 +34,25 @@ export function buildHotStock(signal = {}) {
   if (!Number.isFinite(zoneLow) || !Number.isFinite(zoneHigh) || zoneLow <= 0 || zoneHigh <= 0) return null;
 
   const distanceToZonePct = round(((price - zoneHigh) / zoneHigh) * 100, 2);
-  const buyNow = distanceToZonePct !== null && distanceToZonePct <= BUY_NOW_TOLERANCE_PCT;
+  const belowZone = price < zoneLow;
+  // "Buy now" means price is inside the accumulation band (or within half a
+  // percent of its ceiling). A price far BELOW the band used to pass the old
+  // `distance <= tolerance` test, so a name that had fallen through the zone —
+  // often through the stop as well — was still advertised as buy-now.
+  const buyNow = price >= zoneLow && price <= zoneHigh * (1 + BUY_NOW_TOLERANCE_PCT / 100);
 
-  // Timing matters more than raw quality for a "buy now" board.
-  const timingBonus =
-    distanceToZonePct === null ? 0 : distanceToZonePct <= 0 ? 15 : distanceToZonePct <= 2 ? 8 : distanceToZonePct <= 5 ? 3 : 0;
+  // Timing matters more than raw quality for a "buy now" board: full marks in
+  // the band, partial credit just above it, none once price has fallen out of
+  // it (that is a broken setup, not an early entry).
+  const timingBonus = buyNow
+    ? 15
+    : belowZone
+      ? 0
+      : distanceToZonePct !== null && distanceToZonePct <= 2
+        ? 8
+        : distanceToZonePct !== null && distanceToZonePct <= 5
+          ? 3
+          : 0;
 
   const quality = clamp(Number(signal.score) || 0, 0, 100);
   const conviction = clamp(Number(signal.conviction) || 0, 0, 100);
@@ -82,7 +96,10 @@ export function buildHotStock(signal = {}) {
     buyZone: { low: round(zoneLow), high: round(zoneHigh) },
     entryRef: round((zoneLow + zoneHigh) / 2),
     buyNow,
-    waitFor: buyNow ? null : round(zoneHigh),
+    belowZone,
+    // Above the band you wait for the pullback into its ceiling; below it the
+    // level to reclaim is the floor, not a ceiling that sits even higher.
+    waitFor: buyNow ? null : belowZone ? round(zoneLow) : round(zoneHigh),
     distanceToZonePct,
     sellPlan,
     primaryTarget,

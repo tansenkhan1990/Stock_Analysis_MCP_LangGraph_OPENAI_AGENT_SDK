@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Markdown from '../components/Markdown.jsx';
 import SearchBox from '../components/SearchBox.jsx';
 import Stat from '../components/Stat.jsx';
@@ -14,6 +14,22 @@ const ACTION_CLASS = {
 };
 
 const DIRECTION_CLASS = { bullish: 'up', bearish: 'down', neutral: 'muted' };
+
+/**
+ * Distance to a trigger, worded from spot. The sell trigger always sits below
+ * spot, so a signed print read "-1.56% away" — nonsense. State the side and the
+ * size, and fall back to "at spot" if a level ever lands on the wrong side.
+ */
+function triggerDistance(value, side) {
+  if (!Number.isFinite(value)) return '';
+  const onSide = side === 'buy' ? value > 0 : value < 0;
+  if (!onSide) return 'at spot';
+  return `${pct(Math.abs(value), 2, false)} ${side === 'buy' ? 'above' : 'below'}`;
+}
+
+// Same risk ladder as the server: buys first, sells last. After an AI desk pass
+// the board must stay ranked by the NEW action, not by the quality score.
+const ACTION_RANK = { buy: 0, accumulate: 1, hold: 2, reduce: 3, sell: 4 };
 
 function ConvictionBar({ value }) {
   return (
@@ -81,10 +97,15 @@ function DecisionPanel({ research, onClose, onOpenAnalyzer, onOpenOptions }) {
       {(decision.setupLabel || decision.alertSetup) && (
         <div className="alert-setup">
           <span className="eyebrow">SETUP</span>
-          <strong>{decision.setupLabel || decision.alertSetup}</strong>
+          {/* The setup is the engine's reading of the tape; the model owns the
+              action, so say whose read this is instead of presenting it as
+              the model's own. */}
+          <strong>{isLlm ? `⚙ ${decision.setupLabel || decision.alertSetup}` : decision.setupLabel || decision.alertSetup}</strong>
           {decision.alert?.riskControl && <span className="setup-chip risk">risk exit, not a forecast</span>}
           {decision.alertDisagrees && (
-            <span className="setup-chip warn">AI disagrees: {decision.actionLabel}</span>
+            <span className="setup-chip warn">
+              engine cross-check: {decision.alertActionLabel || decision.alertAction}
+            </span>
           )}
         </div>
       )}
@@ -93,7 +114,11 @@ function DecisionPanel({ research, onClose, onOpenAnalyzer, onOpenOptions }) {
 
       <div className="decision-levels">
         <Stat label="Entry" value={money(decision.keyLevels?.entry)} />
-        <Stat label="Primary target" value={money(decision.keyLevels?.target)} tone="up" />
+        <Stat
+          label="Main target (T2)"
+          value={money(decision.keyLevels?.target)}
+          tone={technical.direction === 'long' ? 'up' : 'down'}
+        />
         <Stat label="Stop" value={money(decision.keyLevels?.stop)} tone="down" />
         <Stat label="Reward : risk" value={`${technical.riskReward ?? '—'} : 1`} />
         <Stat label="News read" value={`${news ? `${news.sentiment > 0 ? '+' : ''}${news.sentiment}` : '—'}`} hint={news?.label} />
@@ -249,6 +274,27 @@ function SignalCard({ row, research, busy, removing, onRunAi, onOpenAnalyzer, on
   const { decision, technical, news, analyst } = row;
   const catalyst = news?.catalysts?.[0];
   const risk = news?.risks?.[0];
+  // An AI / desk pass may override the mechanical levels, so the card must show
+  // the triggers that belong to the call it is displaying.
+  const triggers = decision.triggers || technical.triggers;
+  // The model owns the call; the mechanical read stays visible as a cross-check
+  // instead of being silently swapped out.
+  const deskOwned = row.decisionSource === 'llm' || decision.generatedBy === 'llm' || decision.aiGenerated === 'llm';
+  const engine = row.engineDecision || null;
+  // The label has to follow the call being DISPLAYED. When the model overrides
+  // the engine (e.g. it calls Sell in an uptrend), the upper level is a reclaim
+  // that would cancel that call, not a buy trigger — and price sitting in the
+  // engine's buy zone is no longer a reason to say "in buy zone".
+  const exitCall = ['reduce', 'sell'].includes(decision.action);
+  const entryCall = ['buy', 'accumulate'].includes(decision.action);
+  const upperLabel =
+    triggers?.side === 'short'
+      ? triggers?.buyLabel || 'STOP ABOVE'
+      : exitCall
+        ? 'RECLAIM ABOVE'
+        : entryCall
+          ? triggers?.buyLabel || 'BUY ABOVE'
+          : 'WATCH ABOVE';
 
   return (
     <article className={`signal-card ${ACTION_CLASS[decision.action]}`}>
@@ -278,13 +324,28 @@ function SignalCard({ row, research, busy, removing, onRunAi, onOpenAnalyzer, on
       </header>        <div className="signal-decision">
         <span className={`action-pill ${ACTION_CLASS[decision.action]}`}>{decision.actionLabel}</span>
         {decision.setupLabel && (
-          <span className="setup-chip" title={decision.alert?.setupNote || decision.setupLabel}>
-            {decision.setupLabel}
+          <span
+            className="setup-chip"
+            title={
+              deskOwned
+                ? `Rule-engine setup context: ${decision.alert?.setupNote || decision.setupLabel}`
+                : decision.alert?.setupNote || decision.setupLabel
+            }
+          >
+            {deskOwned ? `⚙ ${decision.setupLabel}` : decision.setupLabel}
           </span>
         )}
-        {decision.aiGenerated === 'llm' && (
-          <span className="ai-badge live" title={decision.aiModel || 'LLM decision'}>
+        {deskOwned ? (
+          <span
+            className="ai-badge live"
+            title={`${decision.aiModel || row.decisionMeta?.model || 'LLM'} decision — the mechanical call is kept as a cross-check`}
+          >
             ✦ AI
+          </span>
+        ) : null}
+        {deskOwned && engine && engine.action !== decision.action && (
+          <span className="setup-chip warn" title={`The rule engine reads ${engine.setupLabel || engine.actionLabel}`}>
+            engine: {engine.actionLabel}
           </span>
         )}
         <div className="signal-score">
@@ -325,28 +386,52 @@ function SignalCard({ row, research, busy, removing, onRunAi, onOpenAnalyzer, on
         />
       </div>
 
-      {technical.triggers && (
+      {triggers && (
         <div className="signal-triggers">
-          <div className="trigger trigger-buy">
-            <span className="trigger-tag">BUY ABOVE</span>
-            <span className="mono">{money(technical.triggers.buyAbove)}</span>
-            <span className="muted small">
-              {technical.triggers.inBuyZone ? 'in zone now' : `${pct(technical.triggers.distanceToBuyPct)} away`}
-            </span>
-          </div>
-          <div className="trigger trigger-sell">
-            <span className="trigger-tag">SELL BELOW</span>
-            <span className="mono">{money(technical.triggers.sellBelow)}</span>
-            <span className="muted small">
-              {technical.triggers.inSellZone ? 'in zone now' : `${pct(technical.triggers.distanceToSellPct)} away`}
-            </span>
+          {triggers.inBuyZone && technical.buyZone && entryCall ? (
+            // Price is already inside the accumulation range, so the actionable
+            // line is the zone itself; the reference entry the plan is built
+            // around is on the level strip right below.
+            <div className="trigger trigger-buy">
+              <span className="trigger-tag">IN BUY ZONE</span>
+              <span className="mono">
+                {money(technical.buyZone.low, 0)}–{money(technical.buyZone.high, 0)}
+              </span>
+            </div>
+          ) : (
+            <div
+              className={`trigger ${triggers.side === 'short' ? 'trigger-sell' : 'trigger-buy'}`}
+              title={triggers.buyHint || ''}
+            >
+              <span className="trigger-tag">{upperLabel}</span>
+              <span className="mono">{money(triggers.buyAbove)}</span>
+              <span className="muted small">{triggerDistance(triggers.distanceToBuyPct, 'buy')}</span>
+            </div>
+          )}
+          {/* On a long this is the stop-loss exit, not a price to sell a winner
+              at: naming it "sell below" made a Buy card read as buy-then-sell-
+              lower. The label says what the level does to the position. */}
+          <div className="trigger trigger-sell" title={triggers.sellHint || ''}>
+            <span className="trigger-tag">{triggers.sellLabel || 'EXIT BELOW'}</span>
+            <span className="mono">{money(triggers.sellBelow)}</span>
+            <span className="muted small">{triggerDistance(triggers.distanceToSellPct, 'sell')}</span>
           </div>
         </div>
       )}
 
       <div className="signal-levels">
         <div>
-          <span className="plan-label">{technical.direction === 'long' ? 'Buy zone' : 'Trim / short zone'}</span>
+          <span className="plan-label">
+            {technical.buyZone
+              ? exitCall
+                ? 'Engine buy zone'
+                : 'Buy zone'
+              : technical.shortZone
+                ? technical.direction === 'short'
+                  ? 'Short zone'
+                  : 'Trim zone'
+                : 'No zone'}
+          </span>
           <span className="mono">
             {technical.buyZone
               ? `${money(technical.buyZone.low, 0)}–${money(technical.buyZone.high, 0)}`
@@ -354,9 +439,25 @@ function SignalCard({ row, research, busy, removing, onRunAi, onOpenAnalyzer, on
                 ? `${money(technical.shortZone.low, 0)}–${money(technical.shortZone.high, 0)}`
                 : '—'}
           </span>
+          {/* Every other number on this strip — the targets, the stop and the
+              R:R — is measured from this reference entry. Without it the
+              ratios cannot be checked against the prices shown. */}
+          {(technical.buyZone || technical.shortZone) && (
+            <span className="muted small" title="Reference entry: the middle of the range above. The targets, the stop and the R:R are all measured from here.">
+              entry {money(technical.entryRef)}
+            </span>
+          )}
         </div>
         <div>
-          <span className="plan-label">Targets</span>
+          {/* On a short-side plan the tiers are below spot, and on an exit call
+              they are places to sell into, not targets for a new long. */}
+          <span className="plan-label">
+            {technical.direction === 'short'
+              ? 'Downside levels'
+              : ['reduce', 'sell'].includes(decision.action)
+                ? 'Trim targets'
+                : 'Profit targets'}
+          </span>
           <span className="mono up">
             {technical.targets.slice(0, 3).map((target) => money(target.price, 0)).join(' / ')}
           </span>
@@ -366,7 +467,7 @@ function SignalCard({ row, research, busy, removing, onRunAi, onOpenAnalyzer, on
           <span className="mono down">{money(technical.stopLoss, 0)}</span>
         </div>
         <div>
-          <span className="plan-label">R:R</span>
+          <span className="plan-label">R:R (to T2)</span>
           <span className="mono">{technical.riskReward ?? '—'}</span>
         </div>
       </div>
@@ -428,6 +529,7 @@ export default function FocusPage({ go, health }) {
   const [adding, setAdding] = useState(false);
   const [removingSymbol, setRemovingSymbol] = useState('');
   const [addError, setAddError] = useState('');
+  const llmLive = health?.agent?.live;
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -471,19 +573,24 @@ export default function FocusPage({ go, health }) {
           if (!hit?.decision) return row;
           return {
             ...row,
+            // The model's fields own the call; the engine keeps supplying the
+            // fused quality score and the setup context it did not return.
             decision: {
               ...row.decision,
-              action: hit.decision.action,
-              actionLabel: hit.decision.actionLabel,
-              conviction: hit.decision.conviction,
-              thesis: hit.decision.thesis,
+              ...hit.decision,
               triggers: hit.decision.triggers || row.decision.triggers,
               aiGenerated: hit.decision.generatedBy,
               aiModel: hit.decisionMeta?.model || null,
             },
+            decisionSource: 'llm',
+            decisionMeta: hit.decisionMeta || row.decisionMeta,
           };
         })
-        .sort((a, b) => b.decision.score - a.decision.score);
+        .sort(
+          (a, b) =>
+            (ACTION_RANK[a.decision.action] ?? 5) - (ACTION_RANK[b.decision.action] ?? 5) ||
+            b.decision.conviction - a.decision.conviction,
+        );
 
       const counts = { ...current.counts };
       for (const key of ['buy', 'accumulate', 'hold', 'reduce', 'sell']) {
@@ -536,8 +643,10 @@ export default function FocusPage({ go, health }) {
     }
   };
 
-  const runDesk = async () => {
-    if (!board?.signals?.length) {
+  /** Run the desk pass for `symbols` (defaults to the whole board). */
+  const runDesk = async (symbols) => {
+    const targets = symbols ?? board?.signals?.map((row) => row.symbol) ?? [];
+    if (!targets.length) {
       setDeskNote('Add a ticker to your focus list before running the desk.');
       return;
     }
@@ -545,7 +654,7 @@ export default function FocusPage({ go, health }) {
     setDeskNote('');
     setError('');
     try {
-      const payload = await api.deskAi({});
+      const payload = await api.deskAi({ symbols: targets });
       applyDeskDecisions(payload);
       const failed = Object.values(payload.decisions || {}).filter((item) => !item.decision).length;
       setDeskNote(
@@ -567,6 +676,25 @@ export default function FocusPage({ go, health }) {
       return next;
     });
 
+  /**
+   * The buy / sell call belongs to the model, not to a hardcoded rule, so once
+   * the board is in and a provider is reachable, fill in the names that have no
+   * model call yet. Each call is cached server-side for 30 minutes, so this
+   * only spends tokens on genuinely stale names — and it runs once per visit.
+   */
+  const deskRequested = useRef(false);
+  useEffect(() => {
+    if (!board || !llmLive || deskRequested.current) return;
+    const pending = board.signals
+      .filter((row) => row.decisionSource !== 'llm')
+      .map((row) => row.symbol);
+    if (!pending.length) return;
+    deskRequested.current = true;
+    runDesk(pending);
+    // Only a new board (or a provider becoming reachable) can re-arm this; the
+    // ref keeps a re-render from firing a second pass.
+  }, [board, llmLive]);
+
   const signals = (board?.signals || []).filter((row) =>
     filter === 'all'
       ? true
@@ -577,8 +705,6 @@ export default function FocusPage({ go, health }) {
           : row.kind === 'etf',
   );
 
-  const llmLive = health?.agent?.live;
-
   return (
     <div className="page focus-page">
       <section className="page-head">
@@ -586,10 +712,11 @@ export default function FocusPage({ go, health }) {
           <div className="eyebrow">FOCUS LIST · AI DESK</div>
           <h1>Buy &amp; sell signals on the names that matter</h1>
           <p className="page-sub">
-            Your editable focus list — seeded with AI/semiconductor mega-caps and option-tradable ETFs. Add any stock or ETF by
-            ticker and remove it with ×. The action is a regime rule validated on five years of this universe —{' '}
-            <strong>buy pullbacks inside an uptrend</strong>, never chase, and exit on a trend break. News flow, deals, Street
-            actions and earnings dates act as guardrails, and an LLM can add the desk call on any name.
+            Your focus list — it starts with the large AI and semiconductor names plus a few ETFs, and you can add any stock or
+            ETF by ticker (remove one with ×). Each name gets one simple call: <strong>Buy</strong> when an uptrend pulls back,{' '}
+            <strong>Accumulate</strong> to build slowly, <strong>Hold</strong> when the price is stretched, and{' '}
+            <strong>Reduce</strong> or <strong>Sell</strong> when the trend breaks. News, deals, analyst actions and earnings dates
+            can block a new buy, and the AI desk can add its own call on any name.
           </p>
         </div>
         <div className="head-actions">
@@ -597,7 +724,7 @@ export default function FocusPage({ go, health }) {
           <button type="button" className="btn btn-ghost" onClick={() => load(true)} disabled={refreshing || deskRunning}>
             <span className={refreshing ? 'spin' : ''}>↻</span> Refresh
           </button>
-          <button type="button" className="btn btn-primary" onClick={runDesk} disabled={deskRunning || loading}>
+          <button type="button" className="btn btn-primary" onClick={() => runDesk()} disabled={deskRunning || loading}>
             <span className={deskRunning ? 'spin' : ''}>✦</span>{' '}
             {deskRunning ? 'Desk reviewing…' : 'Run AI desk on all'}
           </button>
@@ -630,7 +757,7 @@ export default function FocusPage({ go, health }) {
           {board && (
             <section className="focus-summary">
               <div className="panel summary-tile">
-                <span className="eyebrow">SIGNAL MIX</span>
+                <span className="eyebrow">MIX OF CALLS</span>
                 <div className="mix-row">
                   <span className="mix buy">{board.counts.buy} Buy</span>
                   <span className="mix accumulate">{board.counts.accumulate} Accumulate</span>
@@ -639,10 +766,18 @@ export default function FocusPage({ go, health }) {
                   <span className="mix sell">{board.counts.sell} Sell</span>
                 </div>
                 <div className="muted small">
-                  {board.counts.deals} business-deal headlines tracked · average news sentiment{' '}
+                  {board.counts.deals} deal headlines tracked · average news mood{' '}
                   {board.averageNewsSentiment > 0 ? '+' : ''}
                   {board.averageNewsSentiment}
                 </div>
+                {board.decisions && (
+                  <div className="muted small">
+                    {board.decisions.llm} model call{board.decisions.llm === 1 ? '' : 's'}
+                    {board.decisions.ruleEngine
+                      ? ` · ${board.decisions.ruleEngine} on the rule-engine fallback`
+                      : ' · rule engine kept as the cross-check'}
+                  </div>
+                )}
               </div>
 
               <div className="panel summary-tile">
@@ -670,7 +805,7 @@ export default function FocusPage({ go, health }) {
               </div>
 
               <div className="panel summary-tile">
-                <span className="eyebrow">WEAKEST / AVOID</span>
+                <span className="eyebrow">WEAKEST NAME</span>
                 {board.topRisk ? (
                   <>
                     <div className="pick-row">
@@ -699,8 +834,8 @@ export default function FocusPage({ go, health }) {
             <div className="chip-row">
               {[
                 { id: 'all', label: `All ${board?.signals?.length ?? 0}` },
-                { id: 'long', label: 'Long side' },
-                { id: 'short', label: 'Trim / avoid' },
+                { id: 'long', label: 'Buy side' },
+                { id: 'short', label: 'Reduce / sell' },
                 { id: 'etf', label: 'ETFs' },
               ].map((option) => (
                 <button
@@ -719,7 +854,8 @@ export default function FocusPage({ go, health }) {
             </div>
           </div>
           <div className="muted small focus-formula">
-            Fused score = technicals 50% · news 20% · Street 15% · deals 15% · option structures in the Options Lab
+            Quality score = price trend &amp; plan 50% · news mood 20% · analyst actions 15% · deals &amp; catalysts 15%. The Buy /
+            Hold / Sell call comes from the price trend, not from the score — a high-quality name can still be a Hold.
           </div>
 
           <section className="signal-grid">

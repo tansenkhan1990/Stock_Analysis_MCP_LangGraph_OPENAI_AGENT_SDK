@@ -9,7 +9,7 @@ import {
   getQuote,
   searchSymbols,
 } from '../lib/yahoo.js';
-import { getAnalysis, getFocusBoard, getMarketOverview, getResearch } from '../services/index.js';
+import { getAnalysis, getFocusBoard, getMarketOverview, getResearch, pickExpiration } from '../services/index.js';
 
 const compactPlan = (analysis) => ({
   symbol: analysis.symbol,
@@ -76,13 +76,12 @@ const compactPlan = (analysis) => ({
 });
 
 const analysisCache = new Map();
-const withAnalysisTimeout = async (promise) => promise;
 
 async function cachedAnalysis(symbol) {
   const key = symbol;
   const hit = analysisCache.get(key);
   if (hit && Date.now() - hit.time < 90_000) return hit.value;
-  const value = await withAnalysisTimeout(getAnalysis(symbol, { withOptions: true }));
+  const value = await getAnalysis(symbol, { withOptions: true });
   analysisCache.set(key, { time: Date.now(), value });
   return value;
 }
@@ -259,7 +258,9 @@ async function optionChainTool({ symbol, expiration }) {
     getExpirations(ticker),
     getHistory(ticker, { range: '3mo', interval: '1d' }).catch(() => null),
   ]);
-  const expiry = expiration || expiryInfo.expirations[0];
+  // The tool contract says "omit for the ~35 day expiry"; the nearest listed
+  // expiry is often 0–2 DTE, which is a different (and far riskier) trade.
+  const expiry = expiration || pickExpiration(expiryInfo.expirations) || expiryInfo.expirations[0];
   const chain = await getOptionChain(ticker, expiry);
   const spot = quote.price;
   const realizedVol = history ? annualizedVolatility(history.bars.map((bar) => bar.close), 20) : null;
@@ -431,7 +432,11 @@ export async function executeTool(name, args = {}) {
             stopLoss: analysis.plan.stopLoss,
             riskReward: analysis.plan.riskReward,
             rsi: analysis.indicators.rsi14,
-            trend: analysis.levels.nearestSupport,
+            trend: analysis.indicators.sma200
+              ? analysis.price > analysis.indicators.sma200
+                ? 'above 200-day'
+                : 'below 200-day'
+              : null,
           };
         }),
       );
@@ -447,18 +452,24 @@ export async function executeTool(name, args = {}) {
     case 'evaluate_options_strategy': {
       const symbol = requireSymbol(args.symbol);
       const quote = await getQuote(symbol);
-      const legs = (args.legs || []).map((leg) => ({
-        kind: leg.kind,
-        action: leg.action,
-        strike: Number(leg.strike) || quote.price,
-        premium: Number(leg.premium) || 0,
-        qty: Number(leg.qty) || 1,
-      }));
-      if (!legs.length) throw new HttpError(400, 'At least one option leg is required');
+      if (!Number.isFinite(quote.price) || quote.price <= 0) {
+        throw new HttpError(404, `No live price available for ${symbol}`);
+      }
+      const legs = (args.legs || [])
+        .filter((leg) => ['call', 'put', 'stock'].includes(leg?.kind) && ['buy', 'sell'].includes(leg?.action))
+        .map((leg) => ({
+          kind: leg.kind,
+          action: leg.action,
+          strike: Number(leg.strike) || quote.price,
+          premium: Math.max(0, Number(leg.premium) || 0),
+          qty: Math.max(1, Number(leg.qty) || 1),
+        }));
+      if (!legs.length) throw new HttpError(400, 'At least one valid option leg is required');
       const metrics = evaluateStrategy(legs, quote.price, {
         iv: Number(args.iv) || 0.3,
         dte: Number(args.dte) || 30,
       });
+      if (!metrics) throw new HttpError(400, 'Could not evaluate those legs');
       const { curve, ...rest } = metrics;
       return { symbol, spot: quote.price, legs, ...rest };
     }

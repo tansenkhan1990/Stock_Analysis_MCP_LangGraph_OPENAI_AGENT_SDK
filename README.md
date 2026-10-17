@@ -16,10 +16,10 @@ MarketPilot turns live Yahoo Finance data into a transparent, actionable trade p
 | Options ideas | One-click scan of your watchlist: best defined-risk structure per name (IV state, expected move, credit/debit, max loss, probability of profit) loadable straight into the builder. **Run AI desk** upgrades the scan so the model chooses each structure and explains why |
 | Focus board | Buy & sell signals on your editable focus list, seeded with **NVDA, MSFT, AMZN, GOOGL, PLTR, TSLA, AMD, TSM**, option-tradable ETFs (**SPY, QQQ, IWM, SMH, TLT, GLD**) and the Shariah-screened **ISDW.L** (iShares MSCI World Islamic UCITS ETF, IE00B27YCN58, USD on LSE). Add any other stock or ETF from the search box and remove names with ×. The action is a validated regime rule (buy pullbacks in an uptrend, exit on a trend break), shaped by news, deals, Street actions and earnings risk, with both triggers on every card: **BUY ABOVE** and **SELL BELOW** |
 | Deep research / AI desk | Per-name dossier (price structure, article text, deals, upgrades, earnings risk, option pricing) → BUY / ACCUMULATE / HOLD / REDUCE / SELL with thesis, upside drivers, downside risks, catalysts, invalidation and an options expression. “Run AI desk on all” does the whole board in one pass |
-| AI Agent | Streaming chat with visible tool traces. Tools: full analysis, quote, history, option chain, news, comparison, symbol search, market overview, strategy evaluation |
+| AI Agent | Streaming chat with visible tool traces. Tools: full analysis, quote, history, option chain, research digest, focus board, news, comparison, symbol search, market overview, strategy evaluation |
 | News & deal archive | MongoDB stores every Yahoo Finance headline and business-deal story it sees, plus a daily sentiment digest per symbol. A daily job refreshes the archive; the app reads 7/30-day trends from it |
 | Session state | Watchlist, saved research snapshots and agent threads held in memory for the lifetime of the server |
-| Hot Stocks | A ranked buy-now board over the **live US market**: the Yahoo screens (most actives, day gainers, growth tech, undervalued large caps, small-cap movers) are merged into one **market tape of ~500 names** with live price, day move and relative volume. A heat score decides which names get the full plan — the **buy zone**, the **T1/T2/T3 sell prices** (upside + estimated probability), the stop and reward:risk — and the rest stay on the tape with their quote, so nothing is hidden. **All market / Curated board / My list** scopes and a **40–150 name analysis depth** control the scan; names above the entry band are shown separately with the price to wait for, so the page never tells you to chase |
+| Hot Stocks | A ranked buy-now board over the **live US market**: the Yahoo screens (most actives, day gainers, growth tech, undervalued large caps, small-cap movers) are merged into one **market tape of ~500 names** with live price, day move and relative volume. A heat score decides which names get the full plan — the **buy zone**, the **T1/T2/T3 sell prices** (upside + estimated probability), the stop and reward:risk — and the rest stay on the tape with their quote, so nothing is hidden. **All market / Curated board / My list** scopes and a **40–150 name analysis depth** control the scan; names outside the entry band are shown separately with the price to wait for — the top of the band when price is above it, the floor to reclaim when price has broken below it — so the page never tells you to chase or to buy a broken setup |
 | Day Trading | Pick any **US-listed** ticker (09:30–16:00 New York) and get an intraday **BUY / SELL / WAIT** read from 5-minute bars: session VWAP, EMA9 vs EMA20, RSI(14), the 30-minute opening range and relative volume. When a provider is configured the **LLM intraday desk makes the call** (its own entry, stop and 1.5R / 2.5R / 4R targets, with the mechanical read kept beside it), and the page adds the daily regime, headline flow, event risk, option positioning and fundamentals. The chart plots candles, VWAP/EMAs, the opening range, prior close and the trade levels, and the page refreshes every 60 seconds |
 | AI on every buy/sell surface | The model, not just the rule engine, decides the call wherever the app tells you to buy or sell: the **Options Lab** (it picks the structure from the priced candidates or sends its own legs, which are re-priced off the live chain and rejected if the risk is unbounded), the **Day Trading** desk, the **Analyzer** (AI desk call card), the **Focus board** and deep research, plus an on-demand **AI column** on Hot Stocks and the Market dashboard. Model name, latency, cache state and any provider failure are always shown, and every surface falls back to the deterministic engine when there is no key |
 | Display currency | Prices are shown in **EUR** by default, converted from the USD quotes at the live USD→EUR rate; the header switch flips back to native USD and the active rate is printed in the footer. Option strikes, premiums and P/L stay in USD — the US contract convention — while the Options Lab still shows the stock spot in your display currency (USD quote in brackets) |
@@ -39,7 +39,7 @@ Express 5 API
    ├── Analytics engine ────── indicators → scoring → levels → targets → risk plan
    ├── Options engine ──────── chain analytics → Black-Scholes greeks → payoff simulator
    ├── AI agent ────────────── provider adapters (OpenAI-compatible / Anthropic / Gemini / Ollama)
-   │                           + 9 live-data tools + built-in rule-based fallback
+   │                           + 11 live-data tools + built-in rule-based fallback
    ├── Store ───────────────── in-memory watchlist, snapshots and threads
    └── MongoDB ─────────────── news/deal archive + daily sentiment digests (optional)
 ```
@@ -207,7 +207,7 @@ OPENAI_BASE_URL=https://openrouter.ai/api/v1
 OPENAI_MODEL=deepseek/deepseek-v4-pro
 ```
 
-The model has to do two different jobs here: read a numbers-heavy dossier and return one strict JSON decision (deep research), and drive the agent’s nine live-data tools (tool calling). `deepseek/deepseek-v4-pro` is the default recommendation — strongest reasoning-per-dollar for multi-company comparison and sentiment attribution — with `deepseek/deepseek-v4.1-flash` as the cheaper option and `anthropic/claude-sonnet-4.6` when you want maximum judgement and don’t mind roughly 20x the token cost. Any model in OpenRouter’s tool-calling + structured-output sets works; swap the ID and restart.
+The model has to do two different jobs here: read a numbers-heavy dossier and return one strict JSON decision (deep research), and drive the agent’s eleven live-data tools (tool calling). `deepseek/deepseek-v4-pro` is the default recommendation — strongest reasoning-per-dollar for multi-company comparison and sentiment attribution — with `deepseek/deepseek-v4.1-flash` as the cheaper option and `anthropic/claude-sonnet-4.6` when you want maximum judgement and don’t mind roughly 20x the token cost. Any model in OpenRouter’s tool-calling + structured-output sets works; swap the ID and restart.
 
 A wrong or expired key does not break the app: the header badge stays on the rule engine and each research call reports `decisionError` with the provider’s message.
 
@@ -337,7 +337,7 @@ Both containers restart unless stopped. The API waits for Mongo's healthcheck be
 │   │   │   ├── symbolDesk.js    # shared, cached desk call for any surface
 │   │   │   ├── intradayDesk.js  # day-trading desk: dossier, validation, merge
 │   │   │   ├── optionsDesk.js   # options desk: candidates, leg validation, defined-risk gate
-│   │   │   └── tools.js         # 9 tool definitions + executors
+│   │   │   └── tools.js         # 11 tool definitions + executors
 │   │   ├── lib/                 # Yahoo client, cache, Mongo connection, in-memory store, errors
 │   │   ├── models/              # Mongoose: NewsItem, DailyNewsDigest
 │   │   ├── jobs/                # daily news ingest scheduler
@@ -356,7 +356,7 @@ Both containers restart unless stopped. The API waits for Mongo's healthcheck be
 
 ## Reliability notes
 
-- Yahoo calls are cached (quotes 60s, daily history 5m, intraday bars 60s, chains 3m, analysis 90s, scans 5m, FX 10m), de-duplicated in flight, gated to 4 concurrent requests and retried with backoff on HTTP 429.
+- Yahoo calls are cached (quotes 60s, daily history 5m, intraday bars 60s, chains 3m, analysis 90s, scans 5m, FX 10m), de-duplicated in flight, gated to 3 concurrent requests and retried with backoff on HTTP 429.
 - Currency display is presentation-only: the analytics engine, plans and option math stay in USD. If live FX is unavailable the UI serves the last known rate (or falls back to USD) rather than inventing one.
 - Every analytics function is pure and unit-tested; the live layer degrades gracefully when Yahoo or the LLM is unavailable.
 - Option quotes use the mid, falling back to last price. Always re-check the live bid/ask before sending an order.

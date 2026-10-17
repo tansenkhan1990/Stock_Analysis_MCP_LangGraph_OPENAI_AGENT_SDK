@@ -241,6 +241,11 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
       stopLoss = Math.min(stopLoss, price * 1.02);
     }
 
+    // Rounding to cents can collapse the stop onto the entry on low-priced
+    // names, publishing a "0R" plan whose targets all equal the entry. Keep at
+    // least one cent (or 0.1% on larger prices) of distance.
+    const minRisk = Math.max(price * 0.001, 0.01);
+    stopLoss = direction === 'long' ? Math.min(stopLoss, price - minRisk) : Math.max(stopLoss, price + minRisk);
     stopLoss = round(stopLoss);
     const riskPerShare = round(Math.abs(price - stopLoss));
     const targets = [1.5, 2.5, 4].map((multiple, index) => {

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { evaluateStrategy } from '../analytics/options.js';
-import { asyncHandler, badRequest, normalizeSymbol } from '../lib/errors.js';
+import { asyncHandler, badRequest, normalizeSymbol, notFound } from '../lib/errors.js';
 import { getExpirations, getQuote } from '../lib/yahoo.js';
 import { seedWatchlist } from '../lib/store.js';
 import { getChainWithAnalytics, getOptionsDesk, getOptionsIdeas } from '../services/analysisService.js';
@@ -80,6 +80,9 @@ optionsRouter.post(
     }
 
     const quote = await getQuote(ticker);
+    if (!Number.isFinite(quote.price) || quote.price <= 0) {
+      throw notFound(`No live price available for ${ticker}`);
+    }
     const cleanLegs = legs.map((leg) => ({
       kind: leg.kind,
       action: leg.action,
