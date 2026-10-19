@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import CandleChart from '../components/CandleChart.jsx';
-import { useCurrency } from '../components/CurrencyProvider.jsx';
+import { useCurrency, useMoneyText } from '../components/CurrencyProvider.jsx';
 import PayoffChart from '../components/PayoffChart.jsx';
 import ScoreRing from '../components/ScoreRing.jsx';
 import SearchBox from '../components/SearchBox.jsx';
@@ -44,6 +44,7 @@ const Stat = ({ label, value, tone, hint }) => (
 );
 
 function TargetLadder({ analysis }) {
+  const moneyText = useMoneyText();
   const { plan } = analysis;
   const price = analysis.price;
   const targets = plan.targets || [];
@@ -88,7 +89,7 @@ function TargetLadder({ analysis }) {
               <div style={{ width: width(target.price) }} />
             </div>
             <div className="ladder-target-bottom">
-              <span>{target.source}</span>
+              <span>{moneyText(target.source)}</span>
               <span>{target.probability}% est. probability</span>
             </div>
           </div>
@@ -107,6 +108,7 @@ function TargetLadder({ analysis }) {
 
 export default function AnalyzerPage({ symbol, go }) {
   const { code, rate, live } = useCurrency();
+  const moneyText = useMoneyText();
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -333,13 +335,13 @@ export default function AnalyzerPage({ symbol, go }) {
 
           <div className="ai-call-grid">
             <div className="ai-call-copy">
-              <p className="day-ai-thesis">{aiDecision.thesis}</p>
+              <p className="day-ai-thesis">{moneyText(aiDecision.thesis)}</p>
               <div className="ai-call-columns">
                 <div>
                   <h3>Upside drivers</h3>
                   <ul className="day-ai-list">
                     {(aiDecision.upsideDrivers || []).map((item) => (
-                      <li key={item}>{item}</li>
+                      <li key={item}>{moneyText(item)}</li>
                     ))}
                   </ul>
                 </div>
@@ -347,7 +349,7 @@ export default function AnalyzerPage({ symbol, go }) {
                   <h3>Downside risks</h3>
                   <ul className="risk-list tight">
                     {(aiDecision.downsideRisks || []).map((item) => (
-                      <li key={item}>{item}</li>
+                      <li key={item}>{moneyText(item)}</li>
                     ))}
                   </ul>
                 </div>
@@ -355,12 +357,12 @@ export default function AnalyzerPage({ symbol, go }) {
               {aiDecision.invalidations?.length > 0 && (
                 <ul className="context-list">
                   {aiDecision.invalidations.map((item) => (
-                    <li key={item}>{item}</li>
+                    <li key={item}>{moneyText(item)}</li>
                   ))}
                 </ul>
               )}
               {aiDecision.whatWouldChangeMyMind && (
-                <p className="option-note">Would change the call: {aiDecision.whatWouldChangeMyMind}</p>
+                <p className="option-note">Would change the call: {moneyText(aiDecision.whatWouldChangeMyMind)}</p>
               )}
             </div>
 
@@ -387,7 +389,7 @@ export default function AnalyzerPage({ symbol, go }) {
                   {aiDecision.catalysts.slice(0, 5).map((catalyst, index) => (
                     <div key={`${catalyst.detail}-${index}`} className={`catalyst ${catalyst.direction}`}>
                       <span className="catalyst-tag">{catalyst.type}</span>
-                      <span>{catalyst.detail}</span>
+                      <span>{moneyText(catalyst.detail)}</span>
                     </div>
                   ))}
                 </div>
@@ -448,7 +450,7 @@ export default function AnalyzerPage({ symbol, go }) {
                   {analysis.alert?.setupLabel && <span className="setup-chip">{analysis.alert.setupLabel}</span>}
                   <span className="muted small">{plan.horizon}</span>
                 </div>
-                <p className="verdict-lede">{analysis.alert?.reason || analysis.rationale[0]}</p>
+                <p className="verdict-lede">{moneyText(analysis.alert?.reason || analysis.rationale[0])}</p>
                 <div className="verdict-badges">
                   <span className={`score-chip ${scoreTone(score.total)}`}>{score.total}/100</span>
                   <span className="badge">{score.confidence}% confidence</span>
@@ -548,7 +550,7 @@ export default function AnalyzerPage({ symbol, go }) {
             <TargetLadder analysis={analysis} />
             <div className="plan-notes">
               {analysis.rationale.slice(1).map((line, index) => (
-                <p key={index}>{line}</p>
+                <p key={index}>{moneyText(line)}</p>
               ))}
             </div>
           </section>
@@ -608,7 +610,7 @@ export default function AnalyzerPage({ symbol, go }) {
                   <li key={item.label} className={item.passed ? 'pass' : 'fail'}>
                     <span className="check-icon">{item.passed ? '✓' : '✕'}</span>
                     <span>{item.label}</span>
-                    <span className="check-detail mono">{item.detail}</span>
+                    <span className="check-detail mono">{moneyText(item.detail)}</span>
                   </li>
                 ))}
               </ul>
@@ -618,7 +620,7 @@ export default function AnalyzerPage({ symbol, go }) {
               <h2>What could go wrong</h2>
               <ul className="risk-list">
                 {analysis.risks.map((risk) => (
-                  <li key={risk}>{risk}</li>
+                  <li key={risk}>{moneyText(risk)}</li>
                 ))}
               </ul>
             </section>

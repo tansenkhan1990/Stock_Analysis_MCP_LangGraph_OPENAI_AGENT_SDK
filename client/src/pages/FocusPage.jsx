@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Markdown from '../components/Markdown.jsx';
 import SearchBox from '../components/SearchBox.jsx';
+import { useMoneyText } from '../components/CurrencyProvider.jsx';
 import Stat from '../components/Stat.jsx';
 import { api } from '../lib/api.js';
 import { money, num, pct, shortDate, timeAgo, toneForChange, usd } from '../lib/format.js';
@@ -64,6 +65,7 @@ function ConvictionBar({ value }) {
 }
 
 function CatalystList({ items = [], emptyLabel = 'No classified catalysts' }) {
+  const moneyText = useMoneyText();
   if (!items.length) return <div className="empty-note tiny">{emptyLabel}</div>;
   return (
     <ul className="catalyst-list">
@@ -74,7 +76,7 @@ function CatalystList({ items = [], emptyLabel = 'No classified catalysts' }) {
             {item.direction === 'bearish' ? '▼' : item.direction === 'bullish' ? '▲' : '■'}
           </span>
           <span className="catalyst-text">
-            {item.detail || item.title}
+            {moneyText(item.detail || item.title)}
             {item.link && (
               <a href={item.link} target="_blank" rel="noreferrer" className="catalyst-link">
                 source
@@ -88,6 +90,7 @@ function CatalystList({ items = [], emptyLabel = 'No classified catalysts' }) {
 }
 
 function DecisionPanel({ research, onClose, onOpenAnalyzer, onOpenOptions }) {
+  const moneyText = useMoneyText();
   const { decision, combined, news, analyst, event, decisionMeta, decisionError, technical } = research;
   const isLlm = decision.generatedBy === 'llm';
 
@@ -131,7 +134,7 @@ function DecisionPanel({ research, onClose, onOpenAnalyzer, onOpenOptions }) {
         </div>
       )}
 
-      <p className="decision-thesis">{decision.thesis}</p>
+      <p className="decision-thesis">{moneyText(decision.thesis)}</p>
 
       <div className="decision-levels">
         <Stat label="Entry" value={money(decision.keyLevels?.entry)} />
@@ -151,7 +154,7 @@ function DecisionPanel({ research, onClose, onOpenAnalyzer, onOpenOptions }) {
           <h4 className="decision-sub">Upside drivers</h4>
           <ul className="driver-list up">
             {decision.upsideDrivers.map((item, index) => (
-              <li key={index}>{item}</li>
+              <li key={index}>{moneyText(item)}</li>
             ))}
           </ul>
         </div>
@@ -159,7 +162,7 @@ function DecisionPanel({ research, onClose, onOpenAnalyzer, onOpenOptions }) {
           <h4 className="decision-sub">Downside risks</h4>
           <ul className="driver-list down">
             {decision.downsideRisks.map((item, index) => (
-              <li key={index}>{item}</li>
+              <li key={index}>{moneyText(item)}</li>
             ))}
           </ul>
         </div>
@@ -174,12 +177,12 @@ function DecisionPanel({ research, onClose, onOpenAnalyzer, onOpenOptions }) {
           <h4 className="decision-sub">What invalidates it</h4>
           <ul className="driver-list muted-list">
             {decision.invalidations.map((item, index) => (
-              <li key={index}>{item}</li>
+              <li key={index}>{moneyText(item)}</li>
             ))}
           </ul>
           {decision.whatWouldChangeMyMind && (
             <div className="flip-note">
-              <span>⟲</span> {decision.whatWouldChangeMyMind}
+              <span>⟲</span> {moneyText(decision.whatWouldChangeMyMind)}
             </div>
           )}
         </div>

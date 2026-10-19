@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useMoneyText } from '../components/CurrencyProvider.jsx';
 import IntradayChart from '../components/IntradayChart.jsx';
 import SearchBox from '../components/SearchBox.jsx';
 import Stat from '../components/Stat.jsx';
@@ -6,6 +7,7 @@ import { api } from '../lib/api.js';
 import { money, pct, timeAgo, toneForChange } from '../lib/format.js';
 
 export default function DayTradePage({ symbol, go }) {
+  const moneyText = useMoneyText();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -271,7 +273,7 @@ export default function DayTradePage({ symbol, go }) {
             <div className="eyebrow">READ THIS</div>
             <ul className="risk-list">
               {data.risks.map((risk) => (
-                <li key={risk}>{risk}</li>
+                <li key={risk}>{moneyText(risk)}</li>
               ))}
             </ul>
           </section>
@@ -290,7 +292,7 @@ export default function DayTradePage({ symbol, go }) {
             </div>
             <ul className="day-reasons tight">
               {(data.engine?.reasons || []).slice(0, 5).map((reason) => (
-                <li key={reason}>{reason}</li>
+                <li key={reason}>{moneyText(reason)}</li>
               ))}
             </ul>
           </section>
@@ -315,17 +317,17 @@ export default function DayTradePage({ symbol, go }) {
           </div>
           <div className="day-ai-grid">
             <div className="day-ai-copy">
-              {ai.thesis && <p className="day-ai-thesis">{ai.thesis}</p>}
+              {ai.thesis && <p className="day-ai-thesis">{moneyText(ai.thesis)}</p>}
               {ai.reasons?.length > 0 && (
                 <ul className="day-ai-list">
                   {ai.reasons.map((reason) => (
-                    <li key={reason}>{reason}</li>
+                    <li key={reason}>{moneyText(reason)}</li>
                   ))}
                 </ul>
               )}
-              {ai.invalidation && <p className="option-note">Invalidation: {ai.invalidation}</p>}
+              {ai.invalidation && <p className="option-note">Invalidation: {moneyText(ai.invalidation)}</p>}
               {ai.whatWouldChangeMyMind && (
-                <p className="option-note">Would change the call: {ai.whatWouldChangeMyMind}</p>
+                <p className="option-note">Would change the call: {moneyText(ai.whatWouldChangeMyMind)}</p>
               )}
             </div>
             <div className="day-ai-side">
@@ -353,7 +355,7 @@ export default function DayTradePage({ symbol, go }) {
                   {ai.catalysts.slice(0, 5).map((catalyst, index) => (
                     <div key={`${catalyst.detail}-${index}`} className={`catalyst ${catalyst.direction}`}>
                       <span className="catalyst-tag">{catalyst.type}</span>
-                      <span>{catalyst.detail}</span>
+                      <span>{moneyText(catalyst.detail)}</span>
                     </div>
                   ))}
                 </div>
@@ -361,7 +363,7 @@ export default function DayTradePage({ symbol, go }) {
               {ai.risks?.length > 0 && (
                 <ul className="risk-list tight">
                   {ai.risks.slice(0, 4).map((risk) => (
-                    <li key={risk}>{risk}</li>
+                    <li key={risk}>{moneyText(risk)}</li>
                   ))}
                 </ul>
               )}

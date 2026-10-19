@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
-import { readStoredCurrency, setMoneyState, storeCurrency } from '../lib/currency.js';
+import { convertMoneyText, readStoredCurrency, setMoneyState, storeCurrency } from '../lib/currency.js';
 
 const CurrencyContext = createContext({
   code: 'EUR',
@@ -68,3 +68,12 @@ export function CurrencyProvider({ children }) {
 }
 
 export const useCurrency = () => useContext(CurrencyContext);
+
+/**
+ * Convert `$` amounts inside free-form text (analysis rationale, AI prose) to
+ * the display currency, and re-render when the currency flips.
+ */
+export const useMoneyText = () => {
+  useCurrency();
+  return convertMoneyText;
+};

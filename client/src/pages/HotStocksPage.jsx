@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useMoneyText } from '../components/CurrencyProvider.jsx';
 import Sparkline from '../components/Sparkline.jsx';
 import Stat from '../components/Stat.jsx';
 import { api } from '../lib/api.js';
@@ -22,6 +23,7 @@ const SIGNAL_CLASS = {
  * Street activity, event risk and the archive.
  */
 export function EtfCard({ row, go, onFavorite, saved = false, saving = false }) {
+  const moneyText = useMoneyText();
   const decision = row.decision || {};
   const triggers = decision.triggers || {};
   const levels = decision.keyLevels || {};
@@ -68,7 +70,7 @@ export function EtfCard({ row, go, onFavorite, saved = false, saving = false }) 
         <span className="muted small">{decision.conviction ?? 0}% conviction</span>
       </div>
 
-      {decision.thesis && <p className="etf-thesis">{decision.thesis}</p>}
+      {decision.thesis && <p className="etf-thesis">{moneyText(decision.thesis)}</p>}
 
       <div className="etf-levels">
         <Stat label="Entry" value={money(levels.entry)} />
@@ -132,6 +134,7 @@ export function EtfCard({ row, go, onFavorite, saved = false, saving = false }) 
 }
 
 export function HotCard({ stock, go, ai = null, outlook = null, onFavorite, saved = false, saving = false }) {
+  const moneyText = useMoneyText();
   const target = stock.primaryTarget;
   const aiDecision = ai?.decision || null;
   const aiLive = Boolean(ai?.decisionMeta && ai.decisionMeta.provider !== 'rule-engine');
@@ -201,7 +204,7 @@ export function HotCard({ stock, go, ai = null, outlook = null, onFavorite, save
         {outlook && (
           <span
             className={`ai-outlook-chip ${outlook.direction}`}
-            title={`${outlook.source === 'llm' ? 'LLM' : 'Engine'} outlook: ${outlook.reason || outlook.direction}`}
+            title={`${outlook.source === 'llm' ? 'LLM' : 'Engine'} outlook: ${moneyText(outlook.reason || outlook.direction)}`}
           >
             {outlook.direction === 'up' ? '▲' : outlook.direction === 'down' ? '▼' : '■'} AI {outlook.confidence}%
           </span>
@@ -293,7 +296,7 @@ export function HotCard({ stock, go, ai = null, outlook = null, onFavorite, save
               <span className="chip warn">engine says {stock.actionLabel}</span>
             )}
           </div>
-          {aiDecision.thesis && <p className="hot-ai-thesis">{aiDecision.thesis}</p>}
+          {aiDecision.thesis && <p className="hot-ai-thesis">{moneyText(aiDecision.thesis)}</p>}
           {aiDecision.triggers && (
             <div className="hot-ai-levels">
               <span title={aiDecision.triggers.buyHint || ''}>
@@ -342,6 +345,7 @@ export function HotCard({ stock, go, ai = null, outlook = null, onFavorite, save
 }
 
 export function OutlookRow({ pick, go, onFavorite, saved = false, saving = false }) {
+  const moneyText = useMoneyText();
   const up = pick.direction === 'up';
   const move = Number(pick.expectedMovePct);
   return (
@@ -368,7 +372,7 @@ export function OutlookRow({ pick, go, onFavorite, saved = false, saving = false
         )}
         <span className="muted small">{pick.horizon}</span>
       </div>
-      {pick.reason && <p className="outlook-reason">{pick.reason}</p>}
+      {pick.reason && <p className="outlook-reason">{moneyText(pick.reason)}</p>}
       <div className="outlook-actions">
         <button type="button" className="btn btn-mini" onClick={() => go(`/analyze/${pick.symbol}`)}>
           Analyze
