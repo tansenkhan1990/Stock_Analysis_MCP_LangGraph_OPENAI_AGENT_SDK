@@ -4,7 +4,24 @@ import { config, hasLLM } from '../config.js';
  * Provider adapters all speak one internal message format:
  *   { role: 'system'|'user'|'assistant'|'tool', content, toolCalls?, toolCallId?, name? }
  * and return { content, toolCalls: [{ id, name, arguments }] }.
+ *
+ * A user message that carries an image uses multi-part content:
+ *   [{ type: 'text', text }, { type: 'image', mimeType, data }]
+ * where `data` is raw base64 (no data: prefix). Each adapter converts those
+ * blocks into its own vision format below.
  */
+
+const isImageBlock = (block) => block?.type === 'image' && block.data;
+const textOf = (content) =>
+  Array.isArray(content)
+    ? content
+        .filter((block) => block?.type === 'text')
+        .map((block) => block.text)
+        .join('\n')
+    : content || '';
+const imagesOf = (content) =>
+  Array.isArray(content) ? content.filter(isImageBlock).map((block) => block.data) : [];
+const dataUrl = (block) => `data:${block.mimeType || 'image/png'};base64,${block.data}`;
 
 const parseArgs = (raw) => {
   if (!raw) return {};
@@ -50,7 +67,26 @@ const toOpenAIMessages = (messages) =>
     if (message.role === 'tool') {
       return { role: 'tool', tool_call_id: message.toolCallId, content: message.content };
     }
+    if (Array.isArray(message.content)) {
+      return {
+        role: message.role,
+        content: message.content.map((block) =>
+          isImageBlock(block)
+            ? { type: 'image_url', image_url: { url: dataUrl(block) } }
+            : { type: 'text', text: block.text || '' },
+        ),
+      };
+    }
     return { role: message.role, content: message.content };
+  });
+
+/** Ollama takes a plain string plus a separate `images` array of base64. */
+const toOllamaMessages = (messages) =>
+  toOpenAIMessages(messages).map((message, index) => {
+    const source = messages[index];
+    const images = imagesOf(source?.content);
+    if (!images.length) return message;
+    return { role: message.role, content: textOf(source.content), images };
   });
 
 function toAnthropicMessages(messages) {
@@ -75,6 +111,17 @@ function toAnthropicMessages(messages) {
         blocks.push({ type: 'tool_use', id: call.id, name: call.name, input: call.arguments || {} });
       }
       out.push({ role: 'assistant', content: blocks });
+      continue;
+    }
+    if (Array.isArray(message.content)) {
+      out.push({
+        role: message.role,
+        content: message.content.map((block) =>
+          isImageBlock(block)
+            ? { type: 'image', source: { type: 'base64', media_type: block.mimeType || 'image/png', data: block.data } }
+            : { type: 'text', text: block.text || '' },
+        ),
+      });
       continue;
     }
     out.push({ role: message.role, content: message.content });
@@ -107,9 +154,35 @@ function toGeminiContents(messages) {
       contents.push({ role: 'model', parts: parts.length ? parts : [{ text: '' }] });
       continue;
     }
+    if (Array.isArray(message.content)) {
+      contents.push({
+        role: 'user',
+        parts: message.content.map((block) =>
+          isImageBlock(block)
+            ? { inlineData: { mimeType: block.mimeType || 'image/png', data: block.data } }
+            : { text: block.text || '' },
+        ),
+      });
+      continue;
+    }
     contents.push({ role: 'user', parts: [{ text: message.content }] });
   }
   return contents;
+}
+
+/** Vision models on Ollama are opt-in; a text-only model would just error. */
+const OLLAMA_VISION_MODEL = /llava|bakllava|vision|moondream|minicpm-v|qwen2(?:\.\d)?-?vl|gemma3/i;
+
+/**
+ * Every live provider can carry an image, but the configured model and the
+ * endpoint must actually accept one. This drives the UI hint, not a hard gate:
+ * a provider-side rejection is surfaced to the user as a provider error.
+ */
+export function supportsVision() {
+  const provider = config.llm.provider;
+  if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini') return true;
+  if (provider === 'ollama') return OLLAMA_VISION_MODEL.test(config.llm.ollama.model);
+  return false;
 }
 
 export function describeProvider() {
@@ -125,6 +198,7 @@ export function describeProvider() {
     provider,
     model: models[provider] || 'built-in',
     live: hasLLM,
+    vision: hasLLM && supportsVision(),
     label: hasLLM ? `${provider} · ${models[provider]}` : 'built-in analyst (no API key configured)',
   };
 }
@@ -237,7 +311,7 @@ export async function chatWithLLM({ messages, tools }) {
       `${config.llm.ollama.baseUrl}/api/chat`,
       {
         model: config.llm.ollama.model,
-        messages: toOpenAIMessages(messages),
+        messages: toOllamaMessages(messages),
         ...(tools?.length ? { tools } : {}),
         stream: false,
         options: { temperature: 0.2 },

@@ -47,6 +47,7 @@ export async function symbolAiDecision({
   analysis,
   news = null,
   newsHistory = null,
+  marketHistory = null,
   analyst = null,
   event = null,
   options = null,
@@ -82,7 +83,18 @@ export async function symbolAiDecision({
 
   try {
     const result = await decideWithLLM({
-      dossier: buildDossier({ symbol, meta, analysis, news, analyst, event, options, newsHistory, alert }),
+      dossier: buildDossier({
+        symbol,
+        meta,
+        analysis,
+        news,
+        analyst,
+        event,
+        options,
+        newsHistory,
+        marketHistory,
+        alert,
+      }),
       fallback,
     });
     const decisionMeta = {

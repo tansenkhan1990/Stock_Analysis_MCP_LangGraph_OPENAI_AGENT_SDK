@@ -10,6 +10,7 @@ import {
 import { normalizeAction, normalizeDecision, parseDecisionJson } from '../src/agent/llmDecision.js';
 import { peekDecision, withDeskDecision } from '../src/agent/symbolDesk.js';
 import { buildAnalysis } from '../src/analytics/analysis.js';
+import { summarizeMarketHistory } from '../src/analytics/history.js';
 import { cache } from '../src/lib/cache.js';
 
 function makeBars(n, drift = 0.3) {
@@ -481,4 +482,51 @@ test('the options expression follows the alert, not the stale plan direction', (
   const onlyBullish = plans.slice(0, 1);
   assert.equal(pickPlanForAction(onlyBullish, 'sell'), null, 'a sell alert must not carry a bullish structure');
   assert.equal(pickPlanForAction([], 'buy'), null);
+});
+
+test('the daily archive moves conviction and is cited in the thesis, not the levels', () => {
+  const analysis = analysisFixture();
+  const base = builtinDecision({
+    symbol: 'NVDA',
+    meta: { symbol: 'NVDA', name: 'NVIDIA Corp.', theme: 'AI compute' },
+    analysis,
+    news: newsFixture(30),
+    analyst: { tilt: 0.4, upgrades: 3, downgrades: 1, total: 4, window: '120 days', latest: [] },
+    event: { hasEarnings: false },
+    options: { plans: [], summary: null },
+  });
+  assert.equal(base.conviction, base.engineConviction, 'with no archive the live call is untouched');
+  assert.equal(base.history, null);
+  assert.equal(base.dataSources.archive, null);
+
+  const rows = Array.from({ length: 14 }, (_, index) => ({
+    date: `2026-10-${String(index + 1).padStart(2, '0')}`,
+    close: 100 + index,
+    score: index < 9 ? 55 : 70,
+    action: base.action,
+    actionLabel: base.actionLabel,
+    newsSentiment: 12,
+    stopLoss: analysis.plan.stopLoss,
+    target1: analysis.plan.targets[0]?.price ?? null,
+  }));
+  const marketHistory = summarizeMarketHistory('NVDA', rows);
+
+  const withArchive = builtinDecision({
+    symbol: 'NVDA',
+    meta: { symbol: 'NVDA', name: 'NVIDIA Corp.', theme: 'AI compute' },
+    analysis,
+    news: newsFixture(30),
+    analyst: { tilt: 0.4, upgrades: 3, downgrades: 1, total: 4, window: '120 days', latest: [] },
+    event: { hasEarnings: false },
+    options: { plans: [], summary: null },
+    marketHistory,
+  });
+
+  assert.equal(withArchive.keyLevels.stop, base.keyLevels.stop, 'archive never moves the stop');
+  assert.equal(withArchive.keyLevels.target, base.keyLevels.target, 'archive never moves the target');
+  assert.equal(withArchive.history.actionStreak, 14);
+  assert.equal(withArchive.dataSources.archive, 'mongodb-daily-snapshots');
+  assert.ok(withArchive.conviction > base.conviction, 'a confirmed streak and improving score earn conviction');
+  assert.match(withArchive.thesis, /Archive:/);
+  assert.equal(withArchive.archive.coverageDays, 14);
 });

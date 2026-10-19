@@ -2,8 +2,10 @@ import { describeProvider } from '../agent/providers.js';
 import { peekDecision, ruleEngineMeta, symbolAiDecision, withDeskDecision } from '../agent/symbolDesk.js';
 import { ACTION_RANK, buildAlert } from '../analytics/alert.js';
 import { builtinDecision, combinedSignal, eventRisk, tradeTriggers } from '../analytics/decision.js';
+import { applyHistoryToDecision, archiveTrend } from '../analytics/history.js';
 import { analyzeAnalystActions } from '../analytics/news.js';
 import { buildAnalysis } from '../analytics/analysis.js';
+import { growthBand, growthProbability } from '../analytics/growth.js';
 import { FOCUS_SYMBOLS, focusMeta } from '../data/universe.js';
 import { cache } from '../lib/cache.js';
 import { HttpError } from '../lib/errors.js';
@@ -11,6 +13,7 @@ import { seedWatchlist } from '../lib/store.js';
 import { getNewsDigest } from '../lib/newsFeed.js';
 import { getFundamentals, getHistory, getQuotes } from '../lib/yahoo.js';
 import { getAnalysis } from './analysisService.js';
+import { getHistoryForSymbols, getMarketHistory } from './marketHistoryService.js';
 import { getNewsHistory } from './newsHistoryService.js';
 
 const BOARD_TTL = 5 * 60_000;
@@ -34,6 +37,14 @@ const compactPlan = (analysis) => ({
   })),
   stopLoss: analysis.plan.stopLoss,
   riskReward: analysis.plan.riskReward,
+  // The same SMA50-based trend the compact scan signal uses, so a board row
+  // and its Hot Stocks twin score an identical chance to rise.
+  trend:
+    analysis.indicators?.sma50 === null || analysis.indicators?.sma50 === undefined
+      ? null
+      : analysis.price > analysis.indicators.sma50
+        ? 'up'
+        : 'down',
   // Same ratio at the live price, so a surface can tell the reference-entry
   // figure apart from what a fill at spot actually earns.
   riskRewardAtSpot: analysis.plan.riskRewardAtSpot,
@@ -41,6 +52,27 @@ const compactPlan = (analysis) => ({
   invalidation: analysis.plan.invalidation,
   triggers: tradeTriggers({ analysis }),
 });
+
+/**
+ * Attach the blended "chance to rise" to a board row. Measured after the desk
+ * layer so a model conviction is what feeds the number, not the engine's.
+ */
+const withGrowth = (row) => {
+  const targets = row.technical?.targets || [];
+  const direction = row.technical?.direction ?? null;
+  const probability = growthProbability({
+    targetProbability: targets[1]?.probability ?? targets[0]?.probability ?? null,
+    conviction: row.decision?.conviction,
+    quality: row.technical?.score,
+    // Prefer the live SMA50 trend (identical to the Hot Stocks row); fall back
+    // to the plan's side when indicators are missing. A short row is flipped to
+    // a low chance to rise rather than rewarded for a working bearish plan.
+    trend: row.technical?.trend ?? (direction === 'long' ? 'up' : direction === 'short' ? 'down' : null),
+    direction,
+    hitRate: row.archive?.hitRate ?? null,
+  });
+  return { ...row, growthProbability: probability, growthBand: growthBand(probability) };
+};
 
 /** Symbols the user is tracking: the editable watchlist, seeded from the focus universe. */
 async function trackedSymbols() {
@@ -64,11 +96,14 @@ export async function getFocusBoard({ symbols } = {}) {
   const key = `focusBoard:${universe.map((item) => item.symbol).join(',')}`;
 
   const rows = await cache.wrap(key, BOARD_TTL, async () => {
-    const [quotes, benchmark] = await Promise.all([
+    const [quotes, benchmark, archive] = await Promise.all([
       getQuotes(universe.map((item) => item.symbol)),
       // Same benchmark the deep-research call uses, so a card and its desk call
       // never disagree on the score because of a missing relative-strength leg.
       getHistory('SPY', { range: '6mo', interval: '1d' }).catch(() => null),
+      // One archive read for the whole board: score trend, call streak and how
+      // the previous calls resolved, from the daily MongoDB snapshots.
+      getHistoryForSymbols(universe.map((item) => item.symbol), { days: 30 }).catch(() => ({})),
     ]);
     const quoteBySymbol = new Map(quotes.map((quote) => [quote.symbol, quote]));
 
@@ -93,11 +128,22 @@ export async function getFocusBoard({ symbols } = {}) {
         const signal = combinedSignal({ analysis, news, analyst, event });
         const alert = buildAlert({ analysis, news, newsHistory: history7d, analyst, event });
 
+        // The archive only adjusts how much the live call can be trusted —
+        // levels and the action stay live-data decisions.
+        const marketHistory = archive?.[meta.symbol] ?? null;
+        const historyRead = applyHistoryToDecision({
+          action: alert?.action ?? 'hold',
+          conviction: alert?.confidence ?? signal.conviction,
+          history: marketHistory,
+        });
         const engineDecision = {
           ...signal,
           action: alert?.action ?? 'hold',
           actionLabel: alert?.actionLabel ?? 'Hold',
-          conviction: alert?.confidence ?? signal.conviction,
+          conviction: historyRead.conviction,
+          engineConviction: alert?.confidence ?? signal.conviction,
+          convictionDelta: historyRead.delta,
+          historyNotes: historyRead.notes,
           setup: alert?.setup ?? null,
           setupLabel: alert?.setupLabel ?? null,
           alert,
@@ -159,6 +205,9 @@ export async function getFocusBoard({ symbols } = {}) {
                 coverageDays: history7d.coverageDays,
               }
             : null,
+          // Compact archive trend for the card: how long the call has stood,
+          // where the score is going, and whether previous calls worked.
+          archive: marketHistory ? archiveTrend(marketHistory, { action: alert?.action ?? 'hold' }) : null,
         };
       }),
     );
@@ -171,13 +220,13 @@ export async function getFocusBoard({ symbols } = {}) {
   const signals = rows
     .map((row) => {
       const desk = peekDecision(row.symbol);
-      if (!desk) return row;
-      return {
+      if (!desk) return withGrowth(row);
+      return withGrowth({
         ...row,
         decision: withDeskDecision(row.decision, desk),
         decisionSource: 'llm',
         decisionMeta: desk.decisionMeta,
-      };
+      });
     })
     .sort(
       (a, b) =>
@@ -217,10 +266,12 @@ export async function getFocusBoard({ symbols } = {}) {
 async function buildResearchBundle(symbol) {
   const meta = focusMeta(symbol);
   const analysis = await getAnalysis(symbol, { withOptions: true });
-  const [news, fundamentals, newsHistory] = await Promise.all([
+  const [news, fundamentals, newsHistory, marketHistory] = await Promise.all([
     getNewsDigest(symbol, meta.name, { withContent: true, articleCount: 3 }).catch(() => null),
     getFundamentals(symbol).catch(() => analysis.fundamentals),
     getNewsHistory(symbol, { days: 30 }).catch(() => null),
+    // Daily snapshot history from MongoDB; null until the archive has rows.
+    getMarketHistory(symbol, { days: 60 }).catch(() => null),
   ]);
 
   const analyst = analyzeAnalystActions(fundamentals?.analystActionsRaw || []);
@@ -232,13 +283,14 @@ async function buildResearchBundle(symbol) {
     analysis,
     news,
     newsHistory,
+    marketHistory,
     analyst,
     event,
     options: analysis.options,
     signal: combined,
   });
 
-  return { meta, analysis, news, fundamentals, analyst, event, combined, fallback, newsHistory };
+  return { meta, analysis, news, fundamentals, analyst, event, combined, fallback, newsHistory, marketHistory };
 }
 
 /**
@@ -250,7 +302,7 @@ export async function getResearch(symbol, { ai = false, refresh = false, persist
   if (refresh) cache.clear(key);
 
   const bundle = await cache.wrap(key, 5 * 60_000, () => buildResearchBundle(symbol));
-  const { meta, analysis, news, fundamentals, analyst, event, combined, fallback, newsHistory } = bundle;
+  const { meta, analysis, news, fundamentals, analyst, event, combined, fallback, newsHistory, marketHistory } = bundle;
 
   let decision = fallback;
   let decisionMeta = ruleEngineMeta();
@@ -265,6 +317,7 @@ export async function getResearch(symbol, { ai = false, refresh = false, persist
       analysis,
       news,
       newsHistory,
+      marketHistory,
       analyst,
       event,
       options: analysis.options,
@@ -324,6 +377,7 @@ export async function getResearch(symbol, { ai = false, refresh = false, persist
       : null,
     news,
     newsHistory,
+    marketHistory,
     analyst,
     event,
     options: analysis.options,

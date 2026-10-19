@@ -60,6 +60,20 @@ export const api = {
         refresh: refresh ? 1 : undefined,
       })}`,
     ),
+  hotStocksAi: ({ symbols, scope, depth, refresh = false } = {}) =>
+    request('/hot-stocks/ai', {
+      method: 'POST',
+      body: JSON.stringify({
+        symbols: Array.isArray(symbols) ? symbols : symbols ? String(symbols).split(',') : undefined,
+        scope,
+        depth,
+        refresh,
+      }),
+    }),
+  etfDesk: ({ ai = false, refresh = false } = {}) =>
+    ai
+      ? request('/etfs/ai', { method: 'POST', body: JSON.stringify({ refresh }) })
+      : request(`/etfs${qs({ refresh: refresh ? 1 : undefined })}`),
   snapshots: (limit = 20) => request(`/snapshots${qs({ limit })}`),
 
   optionsIdeas: (symbols, { ai = false } = {}) =>
@@ -76,6 +90,11 @@ export const api = {
   evaluate: (payload) =>
     request('/options/evaluate', { method: 'POST', body: JSON.stringify(payload) }),
 
+  portfolioParse: ({ fileName, content, holdings }) =>
+    request('/portfolio/parse', { method: 'POST', body: JSON.stringify({ fileName, content, holdings }) }),
+  portfolioReview: ({ fileName, content, holdings }) =>
+    request('/portfolio/review', { method: 'POST', body: JSON.stringify({ fileName, content, holdings }) }),
+
   watchlist: () => request('/watchlist'),
   addWatchlist: (symbol) => request('/watchlist', { method: 'POST', body: JSON.stringify({ symbol }) }),
   removeWatchlist: (symbol) => request(`/watchlist/${symbol}`, { method: 'DELETE' }),
@@ -84,11 +103,11 @@ export const api = {
   agentThreads: () => request('/agent/threads'),
   agentThread: (id) => request(`/agent/threads/${id}`),
 
-  async chatStream({ message, threadId, symbol, onEvent, signal }) {
+  async chatStream({ message, threadId, symbol, attachment, image, onEvent, signal }) {
     const response = await fetch(`${BASE}/agent/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message, threadId, symbol }),
+      body: JSON.stringify({ message, threadId, symbol, attachment, image }),
       signal,
     });
     if (!response.ok) {

@@ -10,7 +10,8 @@
     "test": "node --test test/*.test.js",
     "validate": "node scripts/validate-signals.js",
     "ingest": "node scripts/ingest-news.js",
-    "ingest:once": "node scripts/ingest-news.js"
+    "ingest:once": "node scripts/ingest-news.js",
+    "archive": "node scripts/archive-market.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

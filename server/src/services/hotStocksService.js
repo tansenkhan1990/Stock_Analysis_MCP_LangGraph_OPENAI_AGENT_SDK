@@ -7,6 +7,16 @@ import {
   selectDeepSymbols,
 } from '../analytics/marketScreen.js';
 import { rankHotStocks } from '../analytics/hotStocks.js';
+import {
+  OUTLOOK_BATCH_SIZE,
+  OUTLOOK_TTL_MS,
+  buildOutlookRows,
+  chunkRows,
+  decideOutlookBatch,
+  engineOutlook,
+  mergeOutlook,
+} from '../agent/hotOutlook.js';
+import { describeProvider } from '../agent/providers.js';
 import { DEFAULT_SCAN_SYMBOLS, HOT_SYMBOLS, HOT_UNIVERSE, focusMeta } from '../data/universe.js';
 import { cache } from '../lib/cache.js';
 import { listWatchlist } from '../lib/store.js';
@@ -86,6 +96,9 @@ export async function getHotStocks({
   limit = null,
   depth = DEFAULT_DEPTH,
   refresh = false,
+  // Internal: the AI outlook needs the full compact signals of every analysed
+  // name, which the public board response deliberately does not carry.
+  includeSignals = false,
 } = {}) {
   const watchlist = await listWatchlist();
   const explicit = Array.isArray(symbols) ? symbols.filter(Boolean) : [];
@@ -116,7 +129,7 @@ export async function getHotStocks({
     const rows = tape.rows.map((row) => {
       const stock = bySymbol.get(row.symbol);
       if (stock) {
-        return { ...row, analysed: true, action: stock.action, actionLabel: stock.actionLabel, buyNow: stock.buyNow, hotScore: stock.hotScore, buyZone: stock.buyZone, sellPlan: stock.sellPlan, stopLoss: stock.stopLoss, primaryTarget: stock.primaryTarget, setupLabel: stock.setupLabel, waiting: !stock.buyNow };
+        return { ...row, analysed: true, action: stock.action, actionLabel: stock.actionLabel, buyNow: stock.buyNow, watch: stock.watch, bucket: stock.bucket, hotScore: stock.hotScore, growthProbability: stock.growthProbability, growthBand: stock.growthBand, buyZone: stock.buyZone, sellPlan: stock.sellPlan, stopLoss: stock.stopLoss, primaryTarget: stock.primaryTarget, setupLabel: stock.setupLabel, waiting: stock.bucket === 'waiting' };
       }
       const meta = focusMeta(row.symbol);
       return {
@@ -126,7 +139,11 @@ export async function getHotStocks({
         action: null,
         actionLabel: null,
         buyNow: false,
+        watch: false,
+        bucket: null,
         hotScore: null,
+        growthProbability: null,
+        growthBand: null,
         buyZone: null,
         sellPlan: [],
         stopLoss: null,
@@ -149,12 +166,14 @@ export async function getHotStocks({
       signals: scan.count,
       count: stocks.length,
       buyNowCount: stocks.filter((stock) => stock.buyNow).length,
-      waitingCount: stocks.filter((stock) => !stock.buyNow).length,
+      waitingCount: stocks.filter((stock) => stock.bucket === 'waiting').length,
+      watchCount: stocks.filter((stock) => stock.watch).length,
       marketBuyNowCount: rows.filter((row) => row.buyNow).length,
       screens: tape.sources,
       stocks,
       tape: rows,
       errors: [...(scan.errors || []), ...(tape.screenErrors || [])],
+      ...(includeSignals ? { analysed: scan.signals } : {}),
     };
   }
 
@@ -178,7 +197,8 @@ export async function getHotStocks({
     signals: scan.count,
     count: stocks.length,
     buyNowCount: stocks.filter((stock) => stock.buyNow).length,
-    waitingCount: stocks.filter((stock) => !stock.buyNow).length,
+    waitingCount: stocks.filter((stock) => stock.bucket === 'waiting').length,
+    watchCount: stocks.filter((stock) => stock.watch).length,
     marketBuyNowCount: stocks.filter((stock) => stock.buyNow).length,
     screens: [],
     stocks,
@@ -193,13 +213,17 @@ export async function getHotStocks({
       action: stock.action,
       actionLabel: stock.actionLabel,
       buyNow: stock.buyNow,
+      watch: stock.watch,
+      bucket: stock.bucket,
       hotScore: stock.hotScore,
+      growthProbability: stock.growthProbability,
+      growthBand: stock.growthBand,
       buyZone: stock.buyZone,
       sellPlan: stock.sellPlan,
       stopLoss: stock.stopLoss,
       primaryTarget: stock.primaryTarget,
       setupLabel: stock.setupLabel,
-      waiting: !stock.buyNow,
+      waiting: stock.bucket === 'waiting',
       curated: HOT_SYMBOLS.includes(stock.symbol),
       watchlist: false,
       sources: ['curated'],
@@ -208,5 +232,80 @@ export async function getHotStocks({
       exchange: null,
     })),
     errors: scan.errors,
+    ...(includeSignals ? { analysed: scan.signals } : {}),
   };
+}
+
+/**
+ * The AI outlook: hand every analysed name to the configured model in compact
+ * batches and return the ones it expects to rise. Cached for 30 minutes, and
+ * it degrades to the deterministic engine ranking when there is no LLM key or
+ * an individual batch fails, so the board always answers.
+ */
+export async function runHotStocksOutlook({
+  symbols = [],
+  scope = 'market',
+  depth = DEFAULT_DEPTH,
+  refresh = false,
+  concurrency = 2,
+} = {}) {
+  const board = await getHotStocks({ symbols, scope, depth, limit: null, refresh, includeSignals: true });
+  const signals = board.analysed || [];
+  const rows = buildOutlookRows(signals);
+  const enginePicks = engineOutlook(signals);
+  const provider = describeProvider();
+  const key = `hotOutlook:${rows.map((row) => row.symbol).sort().join(',')}`;
+
+  if (refresh) cache.clear('hotOutlook:');
+  const cached = cache.get(key);
+  if (cached) return { ...cached, scope: board.scope, depth: board.depth, cached: true };
+
+  const build = async () => {
+    const started = Date.now();
+    const generatedAt = new Date().toISOString();
+
+    if (!provider.live || !rows.length) {
+      return {
+        ...mergeOutlook({ rows, modelPicks: [], enginePicks }),
+        generatedAt,
+        live: false,
+        provider: 'rule-engine',
+        model: 'MarketPilot rule engine',
+        analysed: rows.length,
+        latencyMs: Date.now() - started,
+        errors: [],
+      };
+    }
+
+    const batches = chunkRows(rows, OUTLOOK_BATCH_SIZE);
+    const modelPicks = [];
+    const errors = [];
+    const queue = [...batches];
+    const worker = async () => {
+      while (queue.length) {
+        const batch = queue.shift();
+        try {
+          const result = await decideOutlookBatch({ rows: batch });
+          modelPicks.push(...result.picks);
+        } catch (error) {
+          errors.push(error.message);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, batches.length)) }, () => worker()));
+
+    return {
+      ...mergeOutlook({ rows, modelPicks, enginePicks }),
+      generatedAt,
+      live: true,
+      provider: provider.provider,
+      model: provider.model,
+      analysed: rows.length,
+      latencyMs: Date.now() - started,
+      errors: errors.slice(0, 3),
+    };
+  };
+
+  const payload = await cache.wrap(key, OUTLOOK_TTL_MS, build);
+  return { ...payload, scope: board.scope, depth: board.depth, cached: false };
 }

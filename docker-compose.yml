@@ -35,6 +35,12 @@ services:
       NEWS_INGEST_ENABLED: "true"
       NEWS_INGEST_ON_BOOT: "true"
       NEWS_INGEST_HOUR: "18"
+      # Daily Yahoo Finance snapshot archive: one row per symbol per session,
+      # read back by every decision alongside the live feed.
+      ARCHIVE_ENABLED: "true"
+      ARCHIVE_ON_BOOT: "true"
+      ARCHIVE_HOUR: "22"
+      ARCHIVE_RETENTION_DAYS: "400"
       # Optional LLM keys — pass them through from your shell/.env
       LLM_PROVIDER: ${LLM_PROVIDER:-auto}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

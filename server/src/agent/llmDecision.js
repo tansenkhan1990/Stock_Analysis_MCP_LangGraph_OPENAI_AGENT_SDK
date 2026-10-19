@@ -16,9 +16,11 @@ How to weigh the evidence, in order:
 4. EVENT RISK — an earnings date inside the horizon means smaller size and lower conviction.
 5. OPTIONS PRICING — rich implied volatility favours premium selling (credit spreads); cheap IV favours debits.
 6. MECHANICAL ALERT — a regime rule validated on five years of this universe. Treat it as the base case: deviate only when the news, deals or Street data give a specific, quotable reason, and say what that reason is.
+7. ARCHIVE (MongoDB daily snapshots) — when "archive" is present it is your memory of this name: the quality-score trend over the last sessions, how many sessions the call has been unchanged, plan-level drift, archived news sentiment, and whether the previous calls actually followed through (hit rate and average next-session move). Live Yahoo numbers are the current session and override the last archived row. Use the archive like an analyst uses their own notes: a call confirmed by weeks of snapshots and a good hit rate deserves more conviction; a first-day flip, a deteriorating score, or a history of failed calls deserves less. Say which one it is in the thesis.
 
 Rules:
 - Use ONLY numbers present in the dossier. Never invent prices, dates or figures.
+- The live dossier and the archive are both evidence: never contradict the live plan's levels with an archived one, but do let the archive change how much you trust the live call (conviction) and cite it ("the archived call has been Buy for 9 sessions", "previous calls followed through 64% of the time").
 - Be decisive but calibrated: mixed evidence means a middle action (accumulate/hold) with lower conviction.
 - If the technical score and the news flow disagree, say so explicitly in the thesis and split the difference.
 - Conviction must reflect evidence quality: 75+ only when technicals, news and Street all align.
@@ -63,7 +65,18 @@ export function normalizeAction(value) {
 }
 
 /** Compact, token-efficient research dossier handed to the model. */
-export function buildDossier({ symbol, meta, analysis, news, analyst, event, options, newsHistory = null, alert = null }) {
+export function buildDossier({
+  symbol,
+  meta,
+  analysis,
+  news,
+  analyst,
+  event,
+  options,
+  newsHistory = null,
+  marketHistory = null,
+  alert = null,
+}) {
   const plan = analysis.plan;
   return {
     symbol,
@@ -143,6 +156,49 @@ export function buildDossier({ symbol, meta, analysis, news, analyst, event, opt
           reason: alert.reason,
           invalidations: alert.invalidations,
           evidence: alert.evidence,
+        }
+      : null,
+    // What our own daily snapshots say: score trend, how long the call has
+    // stood, plan drift and how the previous calls actually resolved.
+    archive: marketHistory
+      ? {
+          coverageDays: marketHistory.coverageDays,
+          firstDate: marketHistory.firstDate,
+          lastDate: marketHistory.lastDate,
+          capturedAt: marketHistory.capturedAt,
+          priceChangePct: marketHistory.price?.changePct ?? null,
+          score: {
+            latest: marketHistory.score?.latest ?? null,
+            avg5: marketHistory.score?.avg5 ?? null,
+            avgPrior5: marketHistory.score?.avgPrior5 ?? null,
+            delta5: marketHistory.score?.delta5 ?? null,
+            trend: marketHistory.score?.trend ?? null,
+            stdDev: marketHistory.score?.stdDev ?? null,
+          },
+          action: {
+            latest: marketHistory.action?.latest ?? null,
+            latestLabel: marketHistory.action?.latestLabel ?? null,
+            streak: marketHistory.action?.streak ?? null,
+            streakSince: marketHistory.action?.streakSince ?? null,
+            previous: marketHistory.action?.previous ?? null,
+            previousDate: marketHistory.action?.previousDate ?? null,
+          },
+          sentimentTrend: marketHistory.sentiment?.trend ?? null,
+          sentimentDelta5: marketHistory.sentiment?.delta5 ?? null,
+          levels: {
+            stopLoss: marketHistory.levels?.stopLoss ?? null,
+            stopLossChangePct: marketHistory.levels?.stopLossChangePct ?? null,
+            target1: marketHistory.levels?.target1 ?? null,
+            target1ChangePct: marketHistory.levels?.target1ChangePct ?? null,
+          },
+          followThrough: {
+            hitRate: marketHistory.followThrough?.hitRate ?? null,
+            samples: marketHistory.followThrough?.samples ?? null,
+            avgNextPct: marketHistory.followThrough?.avgNextPct ?? null,
+            buySamples: marketHistory.followThrough?.buySamples ?? null,
+            avoidSamples: marketHistory.followThrough?.avoidSamples ?? null,
+          },
+          recentSnapshots: (marketHistory.snapshots || []).slice(-10),
         }
       : null,
     newsHistory: newsHistory

@@ -42,6 +42,16 @@ test('a buy signal inside its zone is marked buy-now and scored with a timing bo
   assert.match(stock.why, /14% to T2/);
 });
 
+test('every ranked row carries the blended chance to rise', () => {
+  const stock = buildHotStock(baseSignal);
+  // 61*.45 + 68*.30 + 72*.15 + 100*.10 = 68.65, over a weight sum of 1.00
+  assert.equal(stock.growthProbability, 69);
+  assert.equal(stock.growthBand, 'good');
+
+  const pullback = buildHotStock({ ...baseSignal, price: 110, trend: 'flat' });
+  assert.ok(pullback.growthProbability < stock.growthProbability);
+});
+
 test('a price below the buy band is a broken setup, never buy-now', () => {
   const stock = buildHotStock({ ...baseSignal, price: 90 });
   assert.equal(stock.buyNow, false);
@@ -59,7 +69,7 @@ test('a signal above its zone waits for the pullback instead of buying now', () 
   assert.equal(stock.hotScore, 60); // no timing bonus
 });
 
-test('only actionable long setups are ranked', () => {
+test('actionable longs and constructive holds are ranked, sell signals are not', () => {
   const ranked = rankHotStocks([
     baseSignal,
     { ...baseSignal, symbol: 'MSFT', action: 'hold' },
@@ -68,10 +78,39 @@ test('only actionable long setups are ranked', () => {
   ]);
   assert.deepEqual(
     ranked.stocks.map((stock) => stock.symbol),
-    ['AMD', 'NVDA'], // equal hot scores fall back to symbol order
+    ['AMD', 'NVDA', 'MSFT'], // the constructive hold lands in the watch bucket, last
   );
   assert.equal(ranked.buyNow.length, 2);
   assert.equal(ranked.waiting.length, 0);
+  assert.deepEqual(
+    ranked.watch.map((stock) => stock.symbol),
+    ['MSFT'],
+  );
+  assert.equal(ranked.watch[0].bucket, 'watch');
+});
+
+test('a hold only joins the watch bucket when the chart is constructive and quality is high', () => {
+  const ranked = rankHotStocks([
+    { ...baseSignal, symbol: 'UP', action: 'hold', trend: 'up', score: 65, price: 110 },
+    { ...baseSignal, symbol: 'DOWN', action: 'hold', trend: 'down', score: 72 },
+    { ...baseSignal, symbol: 'WEAK', action: 'hold', trend: 'up', score: 54 },
+    { ...baseSignal, symbol: 'SELL', action: 'sell', trend: 'up', score: 80 },
+  ]);
+  assert.deepEqual(
+    ranked.watch.map((stock) => stock.symbol),
+    ['UP'],
+  );
+  assert.equal(ranked.watch[0].buyNow, false);
+  assert.equal(ranked.watch[0].waitFor, 101, 'an extended watch name waits for its band ceiling');
+  assert.equal(ranked.watch[0].hotScore, 56, 'no timing bonus without an entry trigger');
+});
+
+test('a watch name already inside its band is still not marked buy-now', () => {
+  const stock = buildHotStock({ ...baseSignal, action: 'hold', trend: 'up', price: 100 });
+  assert.equal(stock.watch, true);
+  assert.equal(stock.buyNow, false);
+  assert.equal(stock.waitFor, null);
+  assert.ok(stock.growthProbability >= 1 && stock.growthProbability <= 99, 'watch rows still carry a chance to rise');
 });
 
 test('signals without a usable buy zone or price are dropped', () => {

@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 
-export default function SearchBox({ onSelect, placeholder = 'Search ticker or company…', autoFocus = false, compact = false }) {
+export default function SearchBox({
+  onSelect,
+  placeholder = 'Search ticker or company…',
+  autoFocus = false,
+  compact = false,
+  // Optional explicit submit button (e.g. "Add favorite"), so adding a ticker
+  // does not depend on noticing that Enter selects the typed symbol.
+  submitLabel = null,
+}) {
   const [value, setValue] = useState('');
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
@@ -68,8 +76,10 @@ export default function SearchBox({ onSelect, placeholder = 'Search ticker or co
     }
   };
 
+  const pendingSymbol = /^[a-z0-9.^=-]{1,15}$/i.test(value.trim()) ? value.trim().toUpperCase() : '';
+
   return (
-    <div className={`search-box ${compact ? 'compact' : ''}`} ref={wrapRef}>
+    <div className={`search-box ${compact ? 'compact' : ''} ${submitLabel ? 'has-submit' : ''}`} ref={wrapRef}>
       <span className="search-icon" aria-hidden>
         ⌕
       </span>
@@ -87,6 +97,17 @@ export default function SearchBox({ onSelect, placeholder = 'Search ticker or co
         spellCheck={false}
         aria-label="Search symbols"
       />
+      {submitLabel && (
+        <button
+          type="button"
+          className="search-submit"
+          onClick={() => choose(pendingSymbol)}
+          disabled={!pendingSymbol}
+          title={pendingSymbol ? `Add ${pendingSymbol}` : 'Type a ticker first'}
+        >
+          {submitLabel}
+        </button>
+      )}
       {loading && <span className="search-spinner" aria-hidden />}
       {open && results.length > 0 && (
         <ul className="search-results">

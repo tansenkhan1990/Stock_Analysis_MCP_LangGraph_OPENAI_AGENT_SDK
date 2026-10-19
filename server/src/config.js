@@ -44,6 +44,13 @@ export const config = {
     hour: num(process.env.NEWS_INGEST_HOUR, 18),
     retentionDays: num(process.env.NEWS_RETENTION_DAYS, 365),
   },
+  archive: {
+    // Daily Yahoo Finance snapshots in MongoDB: the decision layer's memory.
+    enabled: (process.env.ARCHIVE_ENABLED ?? 'true') !== 'false',
+    onBoot: (process.env.ARCHIVE_ON_BOOT ?? 'true') !== 'false',
+    hour: num(process.env.ARCHIVE_HOUR, 22),
+    retentionDays: num(process.env.ARCHIVE_RETENTION_DAYS, 400),
+  },
   fx: {
     // Fixed USD→EUR rate for offline use; empty/0 means live Yahoo data.
     manualRate: Math.max(0, num(process.env.USD_EUR_RATE, 0)),

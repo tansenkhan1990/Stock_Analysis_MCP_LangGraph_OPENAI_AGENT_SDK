@@ -87,12 +87,13 @@ export const convertMoneyText = (text) => {
   const rate = activeRate();
   const symbol = SYMBOLS[displayCurrency()] || '';
   return String(text ?? '').replace(
-    /\$(-?\d[\d,]*(?:\.\d+)?)([KMBTk])?/g,
-    (match, rawNumber, suffix) => {
+    /(-?)\$(-?\d[\d,]*(?:\.\d+)?)([KMBTk])?/g,
+    (match, leading, rawNumber, suffix) => {
       const value = Number(String(rawNumber).replace(/,/g, ''));
       if (!Number.isFinite(value)) return match;
       const magnitude = suffix ? SUFFIX_SCALE[suffix.toUpperCase()] : 1;
-      const converted = value * magnitude * rate;
+      // Both "-$10" and "$-10" mean minus ten; never emit a double sign.
+      const converted = Math.abs(value * magnitude * rate) * (leading === '-' || value < 0 ? -1 : 1);
       const sign = converted < 0 ? '−' : '';
       const abs = Math.abs(converted);
 

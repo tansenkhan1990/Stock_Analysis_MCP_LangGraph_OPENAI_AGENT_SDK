@@ -4,6 +4,7 @@ import SearchBox from '../components/SearchBox.jsx';
 import Stat from '../components/Stat.jsx';
 import { api } from '../lib/api.js';
 import { money, num, pct, shortDate, timeAgo, toneForChange, usd } from '../lib/format.js';
+import { CHANCE_FILTERS, chanceOfFocusRow, growthBand } from '../lib/growth.js';
 
 const ACTION_CLASS = {
   buy: 'action-buy',
@@ -14,6 +15,26 @@ const ACTION_CLASS = {
 };
 
 const DIRECTION_CLASS = { bullish: 'up', bearish: 'down', neutral: 'muted' };
+
+/** How the board can be ordered. "Chance to rise" is the default. */
+const SORTS = [
+  { id: 'chance', label: 'Best chance to rise' },
+  { id: 'action', label: 'Suggested action' },
+  { id: 'confidence', label: 'Conviction' },
+  { id: 'quality', label: 'Quality score' },
+];
+
+const SORTERS = {
+  chance: (a, b) =>
+    (b.growthProbability ?? -1) - (a.growthProbability ?? -1) ||
+    (ACTION_RANK[a.decision.action] ?? 5) - (ACTION_RANK[b.decision.action] ?? 5) ||
+    b.decision.conviction - a.decision.conviction,
+  action: (a, b) =>
+    (ACTION_RANK[a.decision.action] ?? 5) - (ACTION_RANK[b.decision.action] ?? 5) ||
+    b.decision.conviction - a.decision.conviction,
+  confidence: (a, b) => b.decision.conviction - a.decision.conviction,
+  quality: (a, b) => b.technical.score - a.technical.score,
+};
 
 /**
  * Distance to a trigger, worded from spot. The sell trigger always sits below
@@ -348,6 +369,24 @@ function SignalCard({ row, research, busy, removing, onRunAi, onOpenAnalyzer, on
             engine: {engine.actionLabel}
           </span>
         )}
+        {Number.isFinite(row.growthProbability) && (
+          <span
+            className={`growth-chip ${row.growthBand || ''}`}
+            title="Blended chance to rise: primary-target probability, conviction, quality score, trend and archive follow-through. A working bearish plan scores low on purpose."
+          >
+            ↑ {row.growthProbability}% chance
+          </span>
+        )}
+        {row.archive && (
+          <span
+            className="setup-chip archive"
+            title={`Daily MongoDB archive: ${row.archive.coverageDays} session${row.archive.coverageDays === 1 ? '' : 's'} stored (last ${row.archive.lastDate}). Archived call ${row.archive.label} for ${row.archive.streak} session${row.archive.streak === 1 ? '' : 's'}${
+              row.archive.scoreDelta5 === null ? '' : `, quality score ${row.archive.scoreDelta5 > 0 ? '+' : ''}${row.archive.scoreDelta5} over five sessions`
+            }${row.archive.hitRate === null ? '' : `, previous calls followed through ${row.archive.hitRate}%`}.`}
+          >
+            🗄 {row.archive.coverageDays}d · {row.archive.label} ×{row.archive.streak}
+          </span>
+        )}
         <div className="signal-score">
           <div className="signal-score-row">
             <span className="mono">{decision.score}</span>
@@ -516,6 +555,63 @@ function SignalCard({ row, research, busy, removing, onRunAi, onOpenAnalyzer, on
   );
 }
 
+/**
+ * Manage the focus list directly: add any ticker and remove any tracked name.
+ * The list is the server's watchlist, so it includes names whose quote or scan
+ * failed too — the board cannot show those, but they still need a delete.
+ */
+export function FocusListManager({ items = [], onRemove, onAdd, adding = false, removingSymbol = '', error = '' }) {
+  return (
+    <section className="panel focus-manage">
+      <div className="panel-head">
+        <div>
+          <div className="eyebrow">MANAGE FOCUS LIST</div>
+          <h2>
+            {items.length} name{items.length === 1 ? '' : 's'} tracked
+          </h2>
+        </div>
+        <span className="muted small">Add any stock or ETF, and remove the names you no longer want to follow</span>
+      </div>
+
+      <div className="focus-manage-add">
+        <span className="focus-add-label">☆ Add a stock</span>
+        <SearchBox compact submitLabel="+ Add" placeholder="Ticker or company…" onSelect={onAdd} />
+        {adding && <span className="muted small">Adding…</span>}
+      </div>
+      {error && <div className="alert alert-error tiny">{error}</div>}
+
+      {items.length ? (
+        <ul className="focus-manage-list">
+          {items.map((item) => {
+            const removing = removingSymbol === item.symbol;
+            return (
+              <li key={item.symbol} className={`focus-manage-item ${removing ? 'removing' : ''}`}>
+                <span className="mono focus-manage-symbol">{item.symbol}</span>
+                <span className="focus-manage-name">{item.name || item.symbol}</span>
+                {item.quoteType && (
+                  <span className={`badge badge-type ${item.quoteType === 'ETF' ? 'etf' : ''}`}>{item.quoteType}</span>
+                )}
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title={`Remove ${item.symbol} from your focus list`}
+                  aria-label={`Remove ${item.symbol} from your focus list`}
+                  disabled={removing}
+                  onClick={() => onRemove?.(item.symbol)}
+                >
+                  {removing ? '…' : '×'}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <div className="empty-note tiny">Your focus list is empty — add a ticker above to start tracking it.</div>
+      )}
+    </section>
+  );
+}
+
 export default function FocusPage({ go, health }) {
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -524,12 +620,34 @@ export default function FocusPage({ go, health }) {
   const [research, setResearch] = useState({});
   const [busySymbol, setBusySymbol] = useState('');
   const [filter, setFilter] = useState('all');
+  // Rank by the blended chance to rise by default, and let the user demand a
+  // minimum chance instead of eyeballing a long board.
+  const [sortMode, setSortMode] = useState('chance');
+  const [minChance, setMinChance] = useState(0);
   const [deskRunning, setDeskRunning] = useState(false);
   const [deskNote, setDeskNote] = useState('');
   const [adding, setAdding] = useState(false);
   const [removingSymbol, setRemovingSymbol] = useState('');
   const [addError, setAddError] = useState('');
+  // The raw tracked list, independent of whether the board could price a name.
+  const [tracked, setTracked] = useState([]);
+  const [trackedError, setTrackedError] = useState('');
+  const [managing, setManaging] = useState(false);
   const llmLive = health?.agent?.live;
+
+  const loadTracked = useCallback(async () => {
+    try {
+      const payload = await api.watchlist();
+      setTracked(payload?.items || []);
+      setTrackedError('');
+    } catch (err) {
+      setTrackedError(err.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadTracked();
+  }, [loadTracked]);
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -570,7 +688,10 @@ export default function FocusPage({ go, health }) {
       const signals = current.signals
         .map((row) => {
           const hit = payload.decisions?.[row.symbol];
-          if (!hit?.decision) return row;
+          if (!hit?.decision) {
+            const probability = chanceOfFocusRow(row, { preferServer: false });
+            return { ...row, growthProbability: probability, growthBand: growthBand(probability) };
+          }
           return {
             ...row,
             // The model's fields own the call; the engine keeps supplying the
@@ -585,6 +706,12 @@ export default function FocusPage({ go, health }) {
             decisionSource: 'llm',
             decisionMeta: hit.decisionMeta || row.decisionMeta,
           };
+        })
+        // The model replaced conviction, so re-derive the chance to rise from
+        // the new call rather than keeping the number the server last sent.
+        .map((row) => {
+          const probability = chanceOfFocusRow(row, { preferServer: false });
+          return { ...row, growthProbability: probability, growthBand: growthBand(probability) };
         })
         .sort(
           (a, b) =>
@@ -616,7 +743,7 @@ export default function FocusPage({ go, health }) {
     setAdding(true);
     try {
       await api.addWatchlist(symbol);
-      await load(true);
+      await Promise.all([load(true), loadTracked()]);
     } catch (err) {
       setAddError(err.message);
     } finally {
@@ -635,7 +762,7 @@ export default function FocusPage({ go, health }) {
         delete next[symbol];
         return next;
       });
-      await load(true);
+      await Promise.all([load(true), loadTracked()]);
     } catch (err) {
       setAddError(err.message);
     } finally {
@@ -695,15 +822,26 @@ export default function FocusPage({ go, health }) {
     // ref keeps a re-render from firing a second pass.
   }, [board, llmLive]);
 
-  const signals = (board?.signals || []).filter((row) =>
-    filter === 'all'
-      ? true
-      : filter === 'long'
-        ? ['buy', 'accumulate'].includes(row.decision.action)
-        : filter === 'short'
-          ? ['reduce', 'sell'].includes(row.decision.action)
-          : row.kind === 'etf',
-  );
+  // Ensure every row has a chance to rise before filtering/sorting: the API
+  // sends it, but a stale board should still rank by a real number.
+  const boardRows = (board?.signals || []).map((row) => {
+    if (Number.isFinite(row.growthProbability)) return row;
+    const probability = chanceOfFocusRow(row);
+    return { ...row, growthProbability: probability, growthBand: growthBand(probability) };
+  });
+
+  const signals = boardRows
+    .filter((row) =>
+      filter === 'all'
+        ? true
+        : filter === 'long'
+          ? ['buy', 'accumulate'].includes(row.decision.action)
+          : filter === 'short'
+            ? ['reduce', 'sell'].includes(row.decision.action)
+            : row.kind === 'etf',
+    )
+    .filter((row) => (minChance === 0 ? true : (row.growthProbability ?? 0) >= minChance))
+    .sort(SORTERS[sortMode] || SORTERS.chance);
 
   return (
     <div className="page focus-page">
@@ -712,8 +850,10 @@ export default function FocusPage({ go, health }) {
           <div className="eyebrow">FOCUS LIST · AI DESK</div>
           <h1>Buy &amp; sell signals on the names that matter</h1>
           <p className="page-sub">
-            Your focus list — it starts with the large AI and semiconductor names plus a few ETFs, and you can add any stock or
-            ETF by ticker (remove one with ×). Each name gets one simple call: <strong>Buy</strong> when an uptrend pulls back,{' '}
+            Your favorites — this focus list starts with the large AI and semiconductor names plus a few ETFs. Add any stock or ETF
+            with <strong>☆ Add a favorite</strong> (type a ticker, press + Add), remove one with the × on its card, or open{' '}
+            <strong>Manage list</strong> to add and delete every tracked name in one place. Each name gets one simple call:{' '}
+            <strong>Buy</strong> when an uptrend pulls back,{' '}
             <strong>Accumulate</strong> to build slowly, <strong>Hold</strong> when the price is stretched, and{' '}
             <strong>Reduce</strong> or <strong>Sell</strong> when the trend breaks. News, deals, analyst actions and earnings dates
             can block a new buy, and the AI desk can add its own call on any name.
@@ -727,6 +867,15 @@ export default function FocusPage({ go, health }) {
           <button type="button" className="btn btn-primary" onClick={() => runDesk()} disabled={deskRunning || loading}>
             <span className={deskRunning ? 'spin' : ''}>✦</span>{' '}
             {deskRunning ? 'Desk reviewing…' : 'Run AI desk on all'}
+          </button>
+          <button
+            type="button"
+            className={managing ? 'btn btn-primary' : 'btn btn-ghost'}
+            onClick={() => setManaging((open) => !open)}
+            aria-pressed={managing}
+            title="Add or delete names on your focus list"
+          >
+            ★ Manage list ({tracked.length})
           </button>
           <button type="button" className="btn btn-ghost" onClick={() => go('/agent')}>
             Ask the agent
@@ -746,6 +895,17 @@ export default function FocusPage({ go, health }) {
       {deskNote && <div className="alert alert-info tiny">{deskNote}</div>}
       {addError && <div className="alert alert-error tiny">{addError}</div>}
       {error && <div className="alert alert-error">{error}</div>}
+
+      {managing && (
+        <FocusListManager
+          items={tracked}
+          onAdd={addSymbol}
+          onRemove={removeSymbol}
+          adding={adding}
+          removingSymbol={removingSymbol}
+          error={trackedError}
+        />
+      )}
 
       {loading ? (
         <div className="panel focus-loading">
@@ -848,14 +1008,43 @@ export default function FocusPage({ go, health }) {
                 </button>
               ))}
             </div>
+            <div className="focus-controls">
+              <label className="focus-control">
+                <span>Min chance</span>
+                <select value={minChance} onChange={(event) => setMinChance(Number(event.target.value))}>
+                  {CHANCE_FILTERS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="focus-control">
+                <span>Sort</span>
+                <select value={sortMode} onChange={(event) => setSortMode(event.target.value)}>
+                  {SORTS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span className="muted small">
+                Showing {signals.length} of {board?.signals?.length ?? 0}
+              </span>
+            </div>
             <div className="focus-add">
-              <SearchBox compact placeholder="Add stock or ETF…" onSelect={addSymbol} />
+              <span className="focus-add-label">☆ Add a favorite</span>
+              <SearchBox compact submitLabel="+ Add" placeholder="Ticker or company…" onSelect={addSymbol} />
               {adding && <span className="muted small">Adding…</span>}
             </div>
           </div>
           <div className="muted small focus-formula">
             Quality score = price trend &amp; plan 50% · news mood 20% · analyst actions 15% · deals &amp; catalysts 15%. The Buy /
-            Hold / Sell call comes from the price trend, not from the score — a high-quality name can still be a Hold.
+            Hold / Sell call comes from the price trend, not from the score — a high-quality name can still be a Hold.{' '}
+            <strong>Chance to rise</strong> blends the primary-target probability (45%), conviction (30%), quality (15%), trend
+            (10%) and archive follow-through (10%), and the board is ranked by it by default; the Min chance filter hides
+            everything below the level you pick. A bearish plan scores low on purpose.
           </div>
 
           <section className="signal-grid">
@@ -877,7 +1066,7 @@ export default function FocusPage({ go, health }) {
               <div className="panel empty-note signal-empty">
                 {board?.signals?.length
                   ? 'No names match this filter.'
-                  : 'Your focus list is empty. Search a ticker above to add a stock or ETF.'}
+                  : 'Your focus list is empty. Use ☆ Add a favorite above to add a stock or ETF.'}
               </div>
             )}
           </section>

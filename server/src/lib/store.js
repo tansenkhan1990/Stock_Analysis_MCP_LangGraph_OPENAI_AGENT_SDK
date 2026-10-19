@@ -11,10 +11,18 @@ const memory = {
   watchlist: new Map(),
   snapshots: [],
   threads: new Map(),
+  // Last uploaded portfolio per agent thread, so follow-up questions keep the
+  // book without the user re-attaching the file every turn.
+  portfolios: new Map(),
+  // Last image attached per agent thread, so a follow-up question about a
+  // chart does not require re-uploading it.
+  images: new Map(),
 };
 
 const MAX_SNAPSHOTS = 200;
 const MAX_THREADS = 50;
+// Images are base64 in memory, so only the most recent few are retained.
+const MAX_THREAD_IMAGES = 8;
 
 /** Keep the in-memory agent history bounded; drop the least recently used. */
 function trimThreads() {
@@ -22,7 +30,11 @@ function trimThreads() {
   const excess = [...memory.threads.values()]
     .sort((a, b) => new Date(a.updatedAt) - new Date(b.updatedAt))
     .slice(0, memory.threads.size - MAX_THREADS);
-  for (const thread of excess) memory.threads.delete(thread.threadId);
+  for (const thread of excess) {
+    memory.threads.delete(thread.threadId);
+    memory.portfolios.delete(thread.threadId);
+    memory.images.delete(thread.threadId);
+  }
 }
 
 /** The watchlist starts as the curated focus universe. */
@@ -149,11 +161,41 @@ export async function listThreads(limit = 20) {
     .map(({ threadId, title, provider, updatedAt }) => ({ threadId, title, provider, updatedAt }));
 }
 
+export async function saveThreadPortfolio(threadId, portfolio) {
+  if (!threadId || !portfolio) return null;
+  const entry = { ...portfolio, savedAt: new Date() };
+  memory.portfolios.set(threadId, entry);
+  return entry;
+}
+
+export async function getThreadPortfolio(threadId) {
+  return memory.portfolios.get(threadId) || null;
+}
+
+export async function saveThreadImage(threadId, image) {
+  if (!threadId || !image) return null;
+  const entry = { ...image, savedAt: new Date() };
+  memory.images.set(threadId, entry);
+  if (memory.images.size > MAX_THREAD_IMAGES) {
+    const oldest = [...memory.images.entries()]
+      .sort((a, b) => new Date(a[1].savedAt) - new Date(b[1].savedAt))
+      .slice(0, memory.images.size - MAX_THREAD_IMAGES);
+    for (const [id] of oldest) memory.images.delete(id);
+  }
+  return entry;
+}
+
+export async function getThreadImage(threadId) {
+  return memory.images.get(threadId) || null;
+}
+
 export async function stats() {
   return {
     watchlist: memory.watchlist.size,
     snapshots: memory.snapshots.length,
     threads: memory.threads.size,
+    portfolios: memory.portfolios.size,
+    images: memory.images.size,
     storage: 'memory',
   };
 }

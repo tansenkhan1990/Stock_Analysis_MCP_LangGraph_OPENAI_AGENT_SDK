@@ -1,3 +1,4 @@
+import { archiveTrend, buildArchivePrompt } from '../analytics/history.js';
 import { annualizedVolatility } from '../analytics/indicators.js';
 import { evaluateStrategy, summarizeChain } from '../analytics/options.js';
 import { HttpError } from '../lib/errors.js';
@@ -10,6 +11,7 @@ import {
   searchSymbols,
 } from '../lib/yahoo.js';
 import { getAnalysis, getFocusBoard, getMarketOverview, getResearch, pickExpiration } from '../services/index.js';
+import { getMarketHistory } from '../services/marketHistoryService.js';
 
 const compactPlan = (analysis) => ({
   symbol: analysis.symbol,
@@ -170,6 +172,31 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'get_market_history',
+      description:
+        "The archived daily Yahoo Finance snapshots for a ticker (MongoDB): quality-score trend, buy/sell call history and streak, stop/target drift, archived news sentiment, and whether the previous calls actually followed through. Use it alongside live data for any 'is this still working / has the call changed / how has it behaved' question, and to sanity-check a fresh call against its own history.",
+      parameters: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', description: 'Ticker, e.g. NVDA' },
+          days: { type: 'number', description: 'Look-back window in sessions (default 60, max 400)' },
+        },
+        required: ['symbol'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_portfolio_review',
+      description:
+        "The user's uploaded portfolio, already priced against live quotes and the engine: position sizes, weights, unrealized P/L, the engine call, stop, targets, concentration and a computed exit / trim / add / hold recommendation for every line. Use this whenever the question involves the user's holdings, allocation, risk, rebalancing or what to sell.",
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_news',
       description: 'Recent Yahoo Finance headlines for a ticker.',
       parameters: {
@@ -294,11 +321,31 @@ async function optionChainTool({ symbol, expiration }) {
   };
 }
 
-export async function executeTool(name, args = {}) {
+export async function executeTool(name, args = {}, context = {}) {
   switch (name) {
     case 'get_full_analysis': {
-      const analysis = await cachedAnalysis(requireSymbol(args.symbol));
-      return compactPlan(analysis);
+      const symbol = requireSymbol(args.symbol);
+      const analysis = await cachedAnalysis(symbol);
+      // Live plan plus what our own daily snapshots say about it.
+      const history = await getMarketHistory(symbol, { days: 60 }).catch(() => null);
+      return {
+        ...compactPlan(analysis),
+        archive: history ? archiveTrend(history, { action: analysis.alert?.action ?? null }) : null,
+        archiveSummary: history
+          ? {
+              coverageDays: history.coverageDays,
+              firstDate: history.firstDate,
+              lastDate: history.lastDate,
+              scoreTrend: history.score?.trend ?? null,
+              scoreDelta5: history.score?.delta5 ?? null,
+              actionStreak: history.action?.streak ?? null,
+              actionStreakSince: history.action?.streakSince ?? null,
+              previousHits: history.followThrough?.hitRate ?? null,
+              previousSamples: history.followThrough?.samples ?? null,
+              sentimentTrend: history.sentiment?.trend ?? null,
+            }
+          : null,
+      };
     }
     case 'get_quote': {
       const quote = await getQuote(requireSymbol(args.symbol));
@@ -326,6 +373,31 @@ export async function executeTool(name, args = {}) {
     case 'get_news': {
       const news = await getNews(requireSymbol(args.symbol));
       return { symbol: args.symbol.toUpperCase(), news };
+    }
+    case 'get_market_history': {
+      const symbol = requireSymbol(args.symbol);
+      const days = Math.min(Math.max(Number(args.days) || 60, 1), 400);
+      const history = await getMarketHistory(symbol, { days });
+      if (!history) {
+        throw new HttpError(404, `No archived snapshots for ${symbol} yet — the daily archive has not captured it`);
+      }
+      const { series: _scoreSeries, snapshots, ...summary } = history;
+      return {
+        symbol,
+        days: history.coverageDays,
+        brief: buildArchivePrompt({ symbol, history }),
+        summary,
+        snapshots,
+      };
+    }
+    case 'get_portfolio_review': {
+      if (!context.portfolio) {
+        throw new HttpError(
+          400,
+          'No portfolio is attached to this chat. Ask the user to upload a holdings CSV, TSV or JSON file.',
+        );
+      }
+      return context.portfolio;
     }
     case 'get_research_digest': {
       const research = await getResearch(requireSymbol(args.symbol), { ai: false });
@@ -374,6 +446,21 @@ export async function executeTool(name, args = {}) {
         fundamentals,
         combined,
         ruleEngineCall: decision,
+        archive: research.marketHistory
+          ? {
+              coverageDays: research.marketHistory.coverageDays,
+              firstDate: research.marketHistory.firstDate,
+              lastDate: research.marketHistory.lastDate,
+              scoreTrend: research.marketHistory.score?.trend ?? null,
+              scoreDelta5: research.marketHistory.score?.delta5 ?? null,
+              actionStreak: research.marketHistory.action?.streak ?? null,
+              actionStreakSince: research.marketHistory.action?.streakSince ?? null,
+              previousHits: research.marketHistory.followThrough?.hitRate ?? null,
+              previousSamples: research.marketHistory.followThrough?.samples ?? null,
+              sentimentTrend: research.marketHistory.sentiment?.trend ?? null,
+              brief: buildArchivePrompt({ symbol: research.symbol, history: research.marketHistory }),
+            }
+          : null,
         options: options?.summary
           ? { summary: options.summary, plans: options.plans.map((plan) => ({ name: plan.name, legs: plan.legs, metrics: plan.metrics })) }
           : null,
@@ -485,6 +572,10 @@ export const TOOL_SUMMARY = {
   get_option_chain: (result) =>
     `${result.symbol} ${result.expiration}: ATM IV ${result.summary?.atmIv ?? '—'}% · max pain $${result.summary?.maxPain ?? '—'}`,
   get_news: (result) => `${result.news?.length || 0} recent headlines`,
+  get_market_history: (result) =>
+    `${result.symbol}: ${result.days} archived session${result.days === 1 ? '' : 's'} · ${result.summary?.action?.latestLabel ?? '—'} (${result.summary?.action?.streak ?? 0} session${result.summary?.action?.streak === 1 ? '' : 's'}) · score trend ${result.summary?.score?.trend ?? '—'}`,
+  get_portfolio_review: (result) =>
+    `${result.totals?.positions ?? 0} positions · ${result.counts?.exit ?? 0} exit / ${result.counts?.trim ?? 0} trim · ${result.totals?.cashPct ?? 0}% cash`,
   get_research_digest: (result) =>
     `${result.symbol}: ${result.ruleEngineCall?.actionLabel} (${result.ruleEngineCall?.setupLabel ?? 'no setup'}, quality ${result.combined?.score}/100) · news ${result.news?.sentiment ?? 0} (${result.news?.deals?.length || 0} deals) · street tilt ${result.analyst?.tilt ?? 0}`,
   get_focus_board: (result) =>

@@ -1,4 +1,5 @@
 import { ALERT_LABELS, buildAlert } from './alert.js';
+import { applyHistoryToDecision, archiveTrend } from './history.js';
 
 /**
  * Decision layer: fuses the technical plan with news flow, business deals,
@@ -286,11 +287,33 @@ const actionPhrase = {
 };
 
 /** Deterministic decision used when no LLM is configured (and as a safety net). */
-export function builtinDecision({ symbol, meta, analysis, news, newsHistory = null, analyst, event, options, signal }) {
+export function builtinDecision({
+  symbol,
+  meta,
+  analysis,
+  news,
+  newsHistory = null,
+  marketHistory = null,
+  analyst,
+  event,
+  options,
+  signal,
+}) {
   const combined = signal || combinedSignal({ analysis, news, analyst, event });
   const alert = buildAlert({ analysis, news, newsHistory, analyst, event });
   const plan = analysis.plan;
   const levels = analysis.indicators;
+  // No alert means no usable price/structure, so there is nothing to act on.
+  const action = alert?.action ?? 'hold';
+
+  // The archive (daily MongoDB snapshots) does not move the levels — live data
+  // owns those — it decides how much conviction the live call deserves: a
+  // confirmed streak earns, a first-day flip or a history of failed calls costs.
+  const archive = applyHistoryToDecision({
+    action,
+    conviction: alert?.confidence ?? combined.conviction,
+    history: marketHistory,
+  });
 
   const bullishCatalysts = (news?.catalysts || []).filter((item) => item.direction === 'bullish').slice(0, 3);
   const bearishCatalysts = (news?.catalysts || []).filter((item) => item.direction === 'bearish').slice(0, 3);
@@ -307,6 +330,7 @@ export function builtinDecision({ symbol, meta, analysis, news, newsHistory = nu
 
   const downsideRisks = [
     ...analysis.risks,
+    ...archive.risks,
     ...bearishCatalysts.map((item) => `${item.title}${item.tags?.length ? ` [${item.tags.join(', ')}]` : ''}`),
     ...(analyst?.latest || [])
       .filter((entry) => entry.score < 0)
@@ -336,8 +360,6 @@ export function builtinDecision({ symbol, meta, analysis, news, newsHistory = nu
   const entry = plan.entryRef ?? analysis.price;
   const target = plan.targets?.[1]?.price ?? plan.targets?.[0]?.price ?? null;
   const triggers = tradeTriggers({ analysis });
-  // No alert means no usable price/structure, so there is nothing to act on.
-  const action = alert?.action ?? 'hold';
   const bestPlan = pickPlanForAction(options?.plans, action);
   // The level that would flip a bearish call is above spot (the short stop),
   // not one of its downside targets.
@@ -347,13 +369,19 @@ export function builtinDecision({ symbol, meta, analysis, news, newsHistory = nu
   return {
     action,
     actionLabel: alert?.actionLabel ?? ALERT_LABELS.hold,
-    conviction: alert?.confidence ?? combined.conviction,
+    conviction: archive.conviction,
+    engineConviction: alert?.confidence ?? combined.conviction,
+    convictionDelta: archive.delta,
+    history: archive.summary,
+    historyNotes: archive.notes,
+    archive: marketHistory ? archiveTrend(marketHistory, { action }) : null,
+    dataSources: { live: 'yahoo-finance', archive: archive.summary ? 'mongodb-daily-snapshots' : null },
     setup: alert?.setup ?? null,
     setupLabel: alert?.setupLabel ?? null,
     setupNote: alert?.setupNote ?? null,
     alert,
     horizon: plan.horizon,
-    thesis: `${alert?.reason ? `${alert.reason} ` : ''}Fused quality is ${combined.score}/100 with a Street tilt of ${combined.analystTilt} from ${analyst?.upgrades ?? 0} upgrades / ${analyst?.downgrades ?? 0} downgrades. That mix supports ${actionPhrase[action]} around ${round(entry)} with a ${round(plan.stopLoss)} stop${target ? ` and ${round(target)} as the main target (T2)` : ''}.`,
+    thesis: `${alert?.reason ? `${alert.reason} ` : ''}Fused quality is ${combined.score}/100 with a Street tilt of ${combined.analystTilt} from ${analyst?.upgrades ?? 0} upgrades / ${analyst?.downgrades ?? 0} downgrades. That mix supports ${actionPhrase[action]} around ${round(entry)} with a ${round(plan.stopLoss)} stop${target ? ` and ${round(target)} as the main target (T2)` : ''}.${archive.notes.length ? ` ${archive.notes.join(' ')}` : ''}`,
     upsideDrivers,
     downsideRisks,
     catalysts,
@@ -384,6 +412,7 @@ export function builtinDecision({ symbol, meta, analysis, news, newsHistory = nu
         ? `Two consecutive closes below ${round(plan.stopLoss)} or a bearish guidance update would move this to Hold/Reduce.`
         : `A close above ${round(reversalLevel)} on expanding volume with positive news flow would upgrade this to Accumulate.`,
     newsSentimentLabel: news?.label || 'no data',
+    engineUsedArchive: Boolean(archive.summary),
     generatedBy: 'rule-engine',
     generatedAt: new Date().toISOString(),
   };

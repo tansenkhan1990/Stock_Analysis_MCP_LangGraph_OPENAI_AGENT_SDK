@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import CurrencySwitch from './components/CurrencySwitch.jsx';
 import { useCurrency } from './components/CurrencyProvider.jsx';
+import LlmBadge from './components/LlmBadge.jsx';
 import SearchBox from './components/SearchBox.jsx';
 import { api } from './lib/api.js';
 import AgentPage from './pages/AgentPage.jsx';
@@ -44,10 +45,29 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    api
-      .health()
-      .then(setHealth)
-      .catch(() => setHealth({ ok: false }));
+    let cancelled = false;
+    const load = () =>
+      api
+        .health()
+        .then((payload) => {
+          if (!cancelled) setHealth(payload);
+        })
+        .catch(() => {
+          if (!cancelled) setHealth({ ok: false });
+        });
+    load();
+    // The API reads .env once at boot, so after a restart (a model switch) the
+    // badge should follow along without a full page reload.
+    const timer = setInterval(load, 60_000);
+    const onVisible = () => {
+      if (!document.hidden) load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   const go = useCallback((path) => {
@@ -63,12 +83,10 @@ export default function App() {
   const active = ['focus', 'hot', 'daytrade', 'market', 'analyze', 'options', 'agent'].includes(route.page)
     ? route.page
     : 'focus';
-  const agentLive = health?.agent?.live;
-
   const page = (() => {
     switch (active) {
       case 'hot':
-        return <HotStocksPage go={go} />;
+        return <HotStocksPage go={go} health={health} />;
       case 'daytrade':
         return <DayTradePage symbol={route.param || 'NVDA'} go={go} />;
       case 'analyze':
@@ -127,23 +145,16 @@ export default function App() {
         <div className="topbar-actions">
           <SearchBox compact onSelect={(symbol) => go(`/analyze/${symbol}`)} placeholder="Ticker…" />
           <CurrencySwitch />
-          <div className={`status-pill ${health?.ok ? 'online' : 'offline'}`} title={health?.agent?.label || 'API status'}>
-            <span className="status-dot" />
-            <span className="status-text">
-              {health?.ok ? (
-                agentLive ? (
-                  <>
-                    <span className="status-provider">{health.agent.provider}</span>
-                    {` · ${health.agent.model}`}
-                  </>
-                ) : (
-                  'built-in AI'
-                )
-              ) : (
-                'offline'
-              )}
-            </span>
-          </div>
+          {health === null ? (
+            <LlmBadge agent={null} />
+          ) : health.ok ? (
+            <LlmBadge agent={health.agent} />
+          ) : (
+            <div className="status-pill offline" title="The API is not responding">
+              <span className="status-dot" />
+              <span className="status-text">offline</span>
+            </div>
+          )}
         </div>
       </header>
 

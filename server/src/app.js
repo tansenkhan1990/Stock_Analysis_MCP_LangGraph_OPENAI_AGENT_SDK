@@ -8,14 +8,17 @@ import { describeProvider } from './agent/providers.js';
 import { config } from './config.js';
 import { isMongoReady, mongoStatus } from './lib/db.js';
 import { stats } from './lib/store.js';
+import { marketArchiveStats } from './services/marketHistoryService.js';
 import { newsArchiveStats } from './services/newsHistoryService.js';
 import { agentRouter } from './routes/agent.js';
 import { analysisRouter } from './routes/analysis.js';
+import { archiveRouter } from './routes/archive.js';
 import { dayTradeRouter } from './routes/dayTrade.js';
 import { focusRouter } from './routes/focus.js';
 import { marketRouter } from './routes/market.js';
 import { newsRouter } from './routes/news.js';
 import { optionsRouter } from './routes/options.js';
+import { portfolioRouter } from './routes/portfolio.js';
 import { watchlistRouter } from './routes/watchlist.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -23,13 +26,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
 
 app.use(cors({ origin: true }));
-app.use(express.json({ limit: '1mb' }));
+// The JSON limit has to fit a base64 image attachment on the agent chat route
+// (max 4 MB raw ≈ 5.4 MB encoded); that route validates the real size itself.
+app.use(express.json({ limit: '8mb' }));
 if (config.nodeEnv !== 'test') app.use(morgan('tiny'));
 
 app.get('/api/health', async (req, res) => {
-  const [{ storage: _memoryOnly, ...memoryCounts }, archive] = await Promise.all([
+  const [{ storage: _memoryOnly, ...memoryCounts }, archive, market] = await Promise.all([
     stats(),
     newsArchiveStats(),
+    marketArchiveStats(),
   ]);
   res.json({
     ok: true,
@@ -42,17 +48,22 @@ app.get('/api/health', async (req, res) => {
       newsItems: archive.newsItems,
       digests: archive.digests,
       archivedDeals: archive.deals,
+      snapshots: market.snapshots,
+      snapshotSymbols: market.symbols,
+      lastSnapshotDate: market.lastDate,
     },
     timestamp: new Date().toISOString(),
   });
 });
 
 app.use('/api/market', marketRouter);
+app.use('/api/archive', archiveRouter);
 app.use('/api/news', newsRouter);
 app.use('/api/focus', focusRouter);
 app.use('/api', analysisRouter);
 app.use('/api/options', optionsRouter);
 app.use('/api/daytrade', dayTradeRouter);
+app.use('/api/portfolio', portfolioRouter);
 app.use('/api/watchlist', watchlistRouter);
 app.use('/api/agent', agentRouter);
 
