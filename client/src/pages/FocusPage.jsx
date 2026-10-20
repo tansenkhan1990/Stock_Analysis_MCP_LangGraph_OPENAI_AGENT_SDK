@@ -392,7 +392,11 @@ function SignalCard({ row, research, busy, removing, onRunAi, onOpenAnalyzer, on
         )}
         <div className="signal-score">
           <div className="signal-score-row">
-            <span className="mono">{decision.score}</span>
+            {/* The technical quality score — the same number the Hot Stocks
+                card calls quality. The fused news/Street score stays in the
+                research panel as `combined.score`, so one label never carries
+                two different numbers across boards. */}
+            <span className="mono">{technical.score}</span>
             <span className="muted small">/100 quality</span>
           </div>
           <ConvictionBar value={decision.conviction} />

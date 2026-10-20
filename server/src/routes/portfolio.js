@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { MAX_UPLOAD_BYTES } from '../analytics/portfolio.js';
+import { parseImageAttachment } from '../agent/vision.js';
 import { asyncHandler, badRequest } from '../lib/errors.js';
-import { parsePortfolioUpload, reviewPortfolio } from '../services/portfolioService.js';
+import { extractPortfolioScreenshot, parsePortfolioUpload, reviewPortfolio } from '../services/portfolioService.js';
 
 export const portfolioRouter = Router();
 
@@ -38,6 +39,16 @@ function parseOrThrow(payload) {
  * recognised without pricing anything, so a bad export is caught before the
  * user sends a request.
  */
+portfolioRouter.post(
+  '/extract-image',
+  asyncHandler(async (req, res) => {
+    const image = parseImageAttachment(req.body?.image);
+    if (!image) throw badRequest('Attach a portfolio screenshot first.');
+    const { parsed, model } = await extractPortfolioScreenshot(image);
+    res.json({ ...parsed, model });
+  }),
+);
+
 portfolioRouter.post(
   '/parse',
   asyncHandler(async (req, res) => {

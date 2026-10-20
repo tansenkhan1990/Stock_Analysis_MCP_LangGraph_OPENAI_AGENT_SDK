@@ -17,7 +17,8 @@ MarketPilot turns live Yahoo Finance data into a transparent, actionable trade p
 | Focus board | Buy & sell signals on your editable focus list, seeded with **NVDA, MSFT, AMZN, GOOGL, PLTR, TSLA, AMD, TSM**, option-tradable ETFs (**SPY, QQQ, IWM, SMH, TLT, GLD**) and the Shariah-screened **ISDW.L** (iShares MSCI World Islamic UCITS ETF, IE00B27YCN58, USD on LSE). Add any other stock or ETF with the **☆ Add a favorite** control (type a ticker, press **+ Add**), remove a name with the × on its card, or open **★ Manage list** to see every tracked ticker and add or delete any of them from one panel — including names whose quote failed and therefore never appear as a card. The action is a validated regime rule (buy pullbacks in an uptrend, exit on a trend break), shaped by news, deals, Street actions and earnings risk, with both triggers on every card: **BUY ABOVE** and **SELL BELOW**. Each card shows a **chance to rise** chip and the board is ranked by it by default, with **Min chance** (≥50/60/70%) and **Sort** controls — a bearish plan scores low on purpose, so filtering by chance never surfaces a short as a growth candidate |
 | Deep research / AI desk | Per-name dossier (price structure, article text, deals, upgrades, earnings risk, option pricing) → BUY / ACCUMULATE / HOLD / REDUCE / SELL with thesis, upside drivers, downside risks, catalysts, invalidation and an options expression. “Run AI desk on all” does the whole board in one pass |
 | AI Agent | Streaming chat with visible tool traces. Tools: full analysis, quote, history, option chain, research digest, **archived market history**, focus board, **portfolio review**, news, comparison, symbol search, market overview, strategy evaluation. **Images** can be attached (chart screenshot, broker page, position table) and the agent answers questions about what it actually sees — the image stays with the thread for follow-up questions |
-| Portfolio review | Attach a broker export (CSV/TSV/JSON) in the chat or drag it onto the composer. Every line is priced live and measured against the engine plan: weight, unrealized P/L, stop distance, concentration, sector exposure and a specific **exit / trim N shares / add / hold** call. A structured card renders the book next to the agent's written review, and the portfolio stays attached to the thread for follow-up questions |
+| Portfolio | Upload a broker screenshot in the dedicated Portfolio tab. A configured vision model extracts visible tickers, shares and cost basis; verify and correct them before live quote and engine research returns portfolio risk, concentration, P/L and per-position **exit / trim / add / hold** actions |
+| Portfolio review in AI Agent | CSV/TSV/JSON holdings uploads remain available in chat for follow-up discussion. The image attachment can also be used for general chart or broker-page questions |
 | Daily market archive | MongoDB stores one Yahoo Finance snapshot per tracked symbol per session — quote, volume, the full trade plan (buy zone, stop, T1/T2/T3), quality score, indicators, the engine call, news sentiment, Street tilt and option context. A daily job refreshes it, and every decision reads it back as memory: how long the call has stood, whether the score is improving, whether the previous calls followed through, and how far the stop/targets have drifted |
 | News & deal archive | MongoDB stores every Yahoo Finance headline and business-deal story it sees, plus a daily sentiment digest per symbol. A daily job refreshes the archive; the app reads 7/30-day trends from it |
 | Session state | Watchlist, saved research snapshots, agent threads and each thread's uploaded portfolio held in memory for the lifetime of the server |
@@ -42,7 +43,7 @@ Express 5 API
    ├── Options engine ──────── chain analytics → Black-Scholes greeks → payoff simulator
    ├── AI agent ────────────── provider adapters (OpenAI-compatible / Anthropic / Gemini / Ollama)
    │                           + 12 live-data tools + built-in rule-based fallback
-   ├── Portfolio ───────────── broker-file parser → live pricing → plan-aware actions
+   ├── Portfolio ───────────── screenshot → vision extraction → user verification → live pricing → plan-aware actions
    ├── Store ───────────────── in-memory watchlist, snapshots and threads
    └── MongoDB ─────────────── daily market snapshots + news/deal archive (optional)
 ```
@@ -103,9 +104,15 @@ Attach an image in the AI Agent composer (**Image**, drag-and-drop, or the *Read
 | Thread reuse | The last image attached stays available for follow-up questions in the same chat; **+ New chat** starts fresh |
 | Requirement | A vision-capable model — the built-in analyst cannot read images and says so instead of guessing |
 
-### Portfolio import & review
+### Portfolio screenshot review
 
-Upload a holdings file in the AI Agent page (paperclip, drag-and-drop, or **Download CSV template**). Parsing runs on the server before anything is sent to a model, so a malformed export is rejected in the composer.
+Use the dedicated **Portfolio** tab to upload a PNG, JPEG or WebP screenshot (up to 15 MB before browser resizing; the browser keeps the image near native size and prefers PNG so small table text stays legible). A vision-capable model extracts only visible tickers, quantities, cost basis and any cash balance; verify or edit the extracted rows (and add cash manually if needed) before requesting live prices and engine plans. A broker that prints company names instead of tickers still works: the name is looked up and the resolved ticker is flagged for review. If the model returns no JSON, a second transcription pass reads the same image as a plain table, and rows it cannot resolve are listed by name so nothing is silently dropped. The screenshot is not saved by this feature. Hide account numbers and personal information before upload. Without a configured vision-capable model, screenshot extraction is unavailable.
+
+The portfolio report shows total value and P/L (cash included when supplied), concentration and exposure flags, then an **exit / trim / add / hold / review** action for each uploaded position. Tracked holdings take the same call, buy zone, stop and targets as the Focus board, so a name never shows one plan here and another there. **Add** applies to an existing holding; this portfolio review does not generate a separate list of new tickers to buy.
+
+### Portfolio file import in AI Agent
+
+CSV/TSV/JSON import remains available in the AI Agent page (paperclip, drag-and-drop, or **Download CSV template**) for users who prefer a holdings file. Parsing runs on the server before anything is sent to a model, so a malformed export is rejected in the composer.
 
 | Input | Behaviour |
 | --- | --- |
@@ -355,6 +362,7 @@ Example evaluation body:
 ### Portfolio
 | Method | Route | Description |
 | --- | --- | --- |
+| POST | `/api/portfolio/extract-image` | Extract visible holdings from `{ image: { fileName, mimeType, data } }` using the configured vision model; returns a parsed preview for verification |
 | POST | `/api/portfolio/parse` | Fast preview: parse and validate `{ fileName, content }` (or `{ holdings }`) without pricing |
 | POST | `/api/portfolio/review` | Full review: live quotes, engine plan on the largest lines, weights, P/L, concentration, flags and per-position actions. `?refresh=1` bypasses the 2-minute cache |
 

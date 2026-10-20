@@ -72,7 +72,9 @@ const toOpenAIMessages = (messages) =>
         role: message.role,
         content: message.content.map((block) =>
           isImageBlock(block)
-            ? { type: 'image_url', image_url: { url: dataUrl(block) } }
+            ? // `detail: high` is what keeps small table text (a broker holdings
+              // list) legible; the default `auto` downscales large screenshots.
+              { type: 'image_url', image_url: { url: dataUrl(block), detail: 'high' } }
             : { type: 'text', text: block.text || '' },
         ),
       };
@@ -203,9 +205,11 @@ export function describeProvider() {
   };
 }
 
-export async function chatWithLLM({ messages, tools }) {
+/** `timeoutMs` lets a latency-sensitive caller (screenshot reading) fail fast. */
+export async function chatWithLLM({ messages, tools, timeoutMs }) {
   const provider = config.llm.provider;
   const started = Date.now();
+  const timeout = timeoutMs || 90_000;
 
   if (provider === 'openai') {
     const data = await postJSON(
@@ -217,6 +221,7 @@ export async function chatWithLLM({ messages, tools }) {
         temperature: 0.2,
       },
       { authorization: `Bearer ${config.llm.openai.apiKey}` },
+      timeout,
     );
     const message = data.choices?.[0]?.message || {};
     return {
@@ -253,6 +258,7 @@ export async function chatWithLLM({ messages, tools }) {
         ...anthropicTools,
       },
       { 'x-api-key': config.llm.anthropic.apiKey, 'anthropic-version': '2023-06-01' },
+      timeout,
     );
     const blocks = data.content || [];
     return {
@@ -290,6 +296,8 @@ export async function chatWithLLM({ messages, tools }) {
           : {}),
         generationConfig: { temperature: 0.2, maxOutputTokens: 2200 },
       },
+      {},
+      timeout,
     );
     const parts = data.candidates?.[0]?.content?.parts || [];
     return {
@@ -317,7 +325,7 @@ export async function chatWithLLM({ messages, tools }) {
         options: { temperature: 0.2 },
       },
       {},
-      120_000,
+      timeoutMs || 120_000,
     );
     const message = data.message || {};
     return {

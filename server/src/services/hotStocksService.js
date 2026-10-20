@@ -19,9 +19,10 @@ import {
 import { describeProvider } from '../agent/providers.js';
 import { DEFAULT_SCAN_SYMBOLS, HOT_SYMBOLS, HOT_UNIVERSE, focusMeta } from '../data/universe.js';
 import { cache } from '../lib/cache.js';
-import { listWatchlist } from '../lib/store.js';
+import { seedWatchlist } from '../lib/store.js';
 import { getScreener } from '../lib/yahoo.js';
 import { scanSymbols } from './analysisService.js';
+import { getFocusBoard } from './researchService.js';
 
 export const MAX_HOT_UNIVERSE = 48;
 export const HOT_SCOPES = ['market', 'broad', 'focus'];
@@ -34,6 +35,44 @@ const normalizeSymbols = (symbols = []) => [
       .filter(Boolean),
   ),
 ];
+
+/**
+ * The Focus board is the single source of truth for a tracked name's call: it
+ * fuses news, Street actions, earnings risk and the daily archive, none of
+ * which a market-wide scan can afford for every screened name. A tracked name
+ * therefore takes the Focus row's action, conviction, setup and chance to rise
+ * verbatim, so a symbol added from Hot Stocks shows the same verdict when the
+ * Focus list is opened instead of two different ones.
+ */
+export function applyFocusDecision(signal = {}, row = null) {
+  const decision = row?.decision;
+  if (!decision) return signal;
+  const rawGrowth = row.growthProbability;
+  const growth = rawGrowth === null || rawGrowth === undefined || rawGrowth === '' ? NaN : Number(rawGrowth);
+  return {
+    ...signal,
+    action: decision.action ?? signal.action,
+    actionLabel: decision.actionLabel ?? signal.actionLabel,
+    conviction: decision.conviction ?? signal.conviction,
+    setup: decision.setup ?? signal.setup ?? null,
+    setupLabel: decision.setupLabel ?? signal.setupLabel ?? null,
+    growthProbability: Number.isFinite(growth) ? growth : signal.growthProbability,
+    growthBand: row.growthBand ?? signal.growthBand ?? null,
+  };
+}
+
+/**
+ * Focus rows for the tracked names in a scan, keyed by symbol. Enriching a name
+ * costs a news feed, fundamentals and archive reads, so the merge is bounded.
+ */
+const MAX_FOCUS_DECISIONS = 48;
+
+async function focusDecisions(symbols = []) {
+  const list = normalizeSymbols(symbols).slice(0, MAX_FOCUS_DECISIONS);
+  if (!list.length) return new Map();
+  const board = await getFocusBoard({ symbols: list }).catch(() => null);
+  return new Map((board?.signals || []).map((row) => [row.symbol, row]));
+}
 
 /**
  * Pick what the Hot Stocks board scans:
@@ -100,7 +139,10 @@ export async function getHotStocks({
   // name, which the public board response deliberately does not carry.
   includeSignals = false,
 } = {}) {
-  const watchlist = await listWatchlist();
+  // Seed first: the Focus board is built from the seeded focus universe, so the
+  // Hot board must track the same names or a fresh page load compares against
+  // an empty watchlist and the two boards disagree.
+  const watchlist = await seedWatchlist();
   const explicit = Array.isArray(symbols) ? symbols.filter(Boolean) : [];
   const effectiveScope = explicit.length ? 'custom' : HOT_SCOPES.includes(scope) ? scope : 'market';
 
@@ -117,20 +159,26 @@ export async function getHotStocks({
       ? await scanSymbols(deepSymbols, { maxSymbols: Math.max(deepSymbols.length, MAX_DEPTH) })
       : { generatedAt: new Date().toISOString(), universe: [], count: 0, signals: [], errors: [] };
 
-    const ranked = rankHotStocks(scan.signals);
+    // Tracked names take the Focus board's enriched call (news, Street, event
+    // risk, archive) instead of the scan's technical-only one.
+    const tracked = new Set(watchlist.map((item) => item.symbol));
+    const focusRows = await focusDecisions(scan.signals.filter((signal) => tracked.has(signal.symbol)).map((signal) => signal.symbol));
+    const signals = scan.signals.map((signal) =>
+      focusRows.has(signal.symbol) ? applyFocusDecision(signal, focusRows.get(signal.symbol)) : signal,
+    );
+
+    const ranked = rankHotStocks(signals);
     const bySymbol = new Map(ranked.stocks.map((stock) => [stock.symbol, stock]));
     // `scan.universe` is what we asked for; `scan.signals` is what actually
     // produced a scored plan. A failed symbol must show "not analysed", not
     // "no long setup".
-    const analysed = new Set(scan.signals.map((signal) => signal.symbol));
+    const analysed = new Set(signals.map((signal) => signal.symbol));
 
     // The tape carries every screened name; analysed names also carry their
-    // action, buy zone and sell ladder.
+    // action, buy zone and sell ladder (and therefore every field the cards use).
     const rows = tape.rows.map((row) => {
       const stock = bySymbol.get(row.symbol);
-      if (stock) {
-        return { ...row, analysed: true, action: stock.action, actionLabel: stock.actionLabel, buyNow: stock.buyNow, watch: stock.watch, bucket: stock.bucket, hotScore: stock.hotScore, growthProbability: stock.growthProbability, growthBand: stock.growthBand, buyZone: stock.buyZone, sellPlan: stock.sellPlan, stopLoss: stock.stopLoss, primaryTarget: stock.primaryTarget, setupLabel: stock.setupLabel, waiting: stock.bucket === 'waiting' };
-      }
+      if (stock) return { ...row, ...stock, analysed: true };
       const meta = focusMeta(row.symbol);
       return {
         ...row,
@@ -173,7 +221,7 @@ export async function getHotStocks({
       stocks,
       tape: rows,
       errors: [...(scan.errors || []), ...(tape.screenErrors || [])],
-      ...(includeSignals ? { analysed: scan.signals } : {}),
+      ...(includeSignals ? { analysed: signals } : {}),
     };
   }
 
@@ -183,7 +231,15 @@ export async function getHotStocks({
   if (refresh) cache.clear('scan:');
 
   const scan = await scanSymbols(resolved.symbols);
-  const ranked = rankHotStocks(scan.signals);
+  // Same rule as the market path: a name the user tracks is decided by the
+  // Focus board, so both boards publish one verdict for it.
+  const tracked = new Set(watchlist.map((item) => item.symbol));
+  const focusRows = await focusDecisions(scan.signals.filter((signal) => tracked.has(signal.symbol)).map((signal) => signal.symbol));
+  const signals = scan.signals.map((signal) =>
+    focusRows.has(signal.symbol) ? applyFocusDecision(signal, focusRows.get(signal.symbol)) : signal,
+  );
+
+  const ranked = rankHotStocks(signals);
   const maxRows = Math.min(Math.max(Number(limit) || MAX_HOT_UNIVERSE, 1), MAX_HOT_UNIVERSE);
   const stocks = ranked.stocks.slice(0, maxRows);
 
@@ -203,36 +259,21 @@ export async function getHotStocks({
     screens: [],
     stocks,
     // The curated/focus paths already return every analysed name, so the tape
-    // is the ranked list itself.
+    // is the ranked list itself — carrying the full row (score, conviction,
+    // RSI, risk/reward, sparkline) instead of a trimmed copy that left fields
+    // the cards and the API consumer expect.
     tape: ranked.stocks.map((stock) => ({
-      symbol: stock.symbol,
-      name: stock.name,
-      price: stock.price,
-      changePercent: stock.changePercent,
+      ...stock,
       analysed: true,
-      action: stock.action,
-      actionLabel: stock.actionLabel,
-      buyNow: stock.buyNow,
-      watch: stock.watch,
-      bucket: stock.bucket,
-      hotScore: stock.hotScore,
-      growthProbability: stock.growthProbability,
-      growthBand: stock.growthBand,
-      buyZone: stock.buyZone,
-      sellPlan: stock.sellPlan,
-      stopLoss: stock.stopLoss,
-      primaryTarget: stock.primaryTarget,
-      setupLabel: stock.setupLabel,
-      waiting: stock.bucket === 'waiting',
       curated: HOT_SYMBOLS.includes(stock.symbol),
-      watchlist: false,
-      sources: ['curated'],
+      watchlist: tracked.has(stock.symbol),
+      sources: tracked.has(stock.symbol) ? ['focus'] : ['curated'],
       relativeVolume: null,
       marketCap: null,
       exchange: null,
     })),
     errors: scan.errors,
-    ...(includeSignals ? { analysed: scan.signals } : {}),
+    ...(includeSignals ? { analysed: signals } : {}),
   };
 }
 

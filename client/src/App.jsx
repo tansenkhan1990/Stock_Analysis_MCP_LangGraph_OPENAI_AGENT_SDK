@@ -11,6 +11,7 @@ import DayTradePage from './pages/DayTradePage.jsx';
 import HotStocksPage from './pages/HotStocksPage.jsx';
 import FocusPage from './pages/FocusPage.jsx';
 import OptionsLabPage from './pages/OptionsLabPage.jsx';
+import PortfolioPage from './pages/PortfolioPage.jsx';
 
 const parseHash = () => {
   const raw = window.location.hash.replace(/^#\/?/, '');
@@ -26,6 +27,7 @@ const parseHash = () => {
 const TABS = [
   { id: 'focus', label: 'Focus List', path: '/', icon: '◎' },
   { id: 'hot', label: 'Hot Stocks', path: '/hot', icon: '⇗' },
+  { id: 'portfolio', label: 'Portfolio', path: '/portfolio', icon: '▤' },
   { id: 'daytrade', label: 'Day Trading', path: '/daytrade/NVDA', icon: '⚡' },
   { id: 'market', label: 'Market', path: '/market', icon: '◧' },
   { id: 'analyze', label: 'Analyzer', path: '/analyze/NVDA', icon: '◔' },
@@ -80,13 +82,15 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
-  const active = ['focus', 'hot', 'daytrade', 'market', 'analyze', 'options', 'agent'].includes(route.page)
+  const active = ['focus', 'hot', 'portfolio', 'daytrade', 'market', 'analyze', 'options', 'agent'].includes(route.page)
     ? route.page
     : 'focus';
   const page = (() => {
     switch (active) {
       case 'hot':
         return <HotStocksPage go={go} health={health} />;
+      case 'portfolio':
+        return <PortfolioPage health={health} />;
       case 'daytrade':
         return <DayTradePage symbol={route.param || 'NVDA'} go={go} />;
       case 'analyze':

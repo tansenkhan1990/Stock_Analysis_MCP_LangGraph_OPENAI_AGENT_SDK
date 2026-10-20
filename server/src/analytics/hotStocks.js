@@ -102,18 +102,25 @@ export function buildHotStock(signal = {}) {
   const bucket = watch ? 'watch' : buyNow ? 'buy-now' : 'waiting';
   // One comparable "chance to rise" for every row, so the page can rank and
   // filter across the buckets instead of pitting hot scores against each other.
-  const growth = growthProbability({
-    targetProbability: primaryTarget?.probability ?? null,
-    conviction,
-    quality,
-    trend: signal.trend ?? null,
-  });
+  // A symbol the Focus board already scored carries that exact number, so the
+  // same stock never shows two different chances on the two boards.
+  const sharedGrowth = signal.growthProbability;
+  const sharedValue = sharedGrowth === null || sharedGrowth === undefined || sharedGrowth === '' ? NaN : Number(sharedGrowth);
+  const growth = Number.isFinite(sharedValue)
+    ? clamp(Math.round(sharedValue), 1, 99)
+    : growthProbability({
+        targetProbability: primaryTarget?.probability ?? null,
+        conviction,
+        quality,
+        trend: signal.trend ?? null,
+      });
 
   return {
     symbol: signal.symbol,
     name: signal.name,
     quoteType: signal.quoteType,
     price,
+    change: signal.change ?? null,
     changePercent: signal.changePercent ?? null,
     score: quality,
     conviction,
@@ -132,8 +139,8 @@ export function buildHotStock(signal = {}) {
     belowZone,
     watch,
     bucket,
-    growthProbability: growth,
-    growthBand: growthBand(growth),
+    growthProbability: Number.isFinite(growth) ? growth : null,
+    growthBand: signal.growthBand || growthBand(growth),
     // Above the band you wait for the pullback into its ceiling; below it the
     // level to reclaim is the floor, not a ceiling that sits even higher.
     waitFor: buyNow || inBand ? null : belowZone ? round(zoneLow) : round(zoneHigh),

@@ -177,7 +177,7 @@ export async function getHistory(symbol, { range = '1y', interval = '1d' } = {})
  * through the same path as every other quote.
  */
 export async function getScreener(scrId, { count = 100 } = {}) {
-  return cache.wrap(`screener:${scrId}:${count}`, 5 * 60_000, async () => {
+  return cache.wrap(`screener:${scrId}:${count}`, config.cache.quoteTtl, async () => {
     let raw;
     try {
       raw = await withRetry(() => yf.screener({ scrIds: scrId, count }, {}, { validateResult: false }));
@@ -185,6 +185,7 @@ export async function getScreener(scrId, { count = 100 } = {}) {
       throw translateError(error, `screener ${scrId}`);
     }
     const quotes = (raw?.quotes || []).map(normalizeQuote).filter((quote) => quote?.symbol && quote.price);
+    for (const quote of quotes) cache.set(`quote:${quote.symbol}`, quote, config.cache.quoteTtl);
     return {
       id: scrId,
       total: num(raw?.total) ?? quotes.length,

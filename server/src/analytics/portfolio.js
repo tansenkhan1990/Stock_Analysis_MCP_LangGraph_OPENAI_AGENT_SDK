@@ -197,6 +197,48 @@ function cleanSymbol(raw) {
   return symbol;
 }
 
+/** A salvaged token has to look like a real ticker, not a company name. */
+const isPlausibleTicker = (symbol) =>
+  Boolean(symbol) &&
+  symbol.length <= 8 &&
+  /[A-Z]/.test(symbol) &&
+  SYMBOL_RE.test(symbol) &&
+  !IGNORED_SYMBOLS.has(symbol.replace(/\s+/g, ''));
+
+/**
+ * Best-effort ticker from a noisy screenshot cell: "AAPL - Apple Inc.",
+ * "NVIDIA Corp. (NVDA)", "NYSE:TSM", "BRK/B", "$AAPL". Used only by the
+ * vision path, where the user verifies every row before it is priced — a
+ * salvageable line is better than silently dropping the holding.
+ */
+export function salvageTicker(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return '';
+
+  const direct = cleanSymbol(text);
+  if (isPlausibleTicker(direct)) return direct;
+
+  // Class shares are written BRK/B on some brokers; Yahoo uses BRK-B.
+  const slash = cleanSymbol(text.replace(/\//g, '-'));
+  if (isPlausibleTicker(slash)) return slash;
+
+  // A ticker in parentheses is the most reliable signal in a name column.
+  for (const match of text.matchAll(/\(([A-Za-z0-9.^=-]{1,10})\)/g)) {
+    const candidate = cleanSymbol(match[1]);
+    if (isPlausibleTicker(candidate)) return candidate;
+  }
+
+  // Otherwise prefer an all-caps token (tickers are upper-case on screen).
+  // Two characters minimum so the capital in "Total" or "Apple" is not read
+  // as a ticker.
+  for (const match of text.matchAll(/\b([A-Z]{2,6}(?:\.[A-Z]{1,3})?)\b/g)) {
+    const candidate = cleanSymbol(match[1]);
+    if (isPlausibleTicker(candidate)) return candidate;
+  }
+
+  return '';
+}
+
 function isCashSymbol(symbol, assetType) {
   const compactSymbol = symbol.replace(/\s+/g, '');
   if (CASH_CODES.has(compactSymbol)) return true;
@@ -303,12 +345,19 @@ function warn(warnings, message) {
 
 function mergePositions(positions, warnings) {
   const merged = new Map();
-  for (const position of positions) {
-    const key = `${position.symbol}|${position.currency}`;
+  positions.forEach((position, index) => {
+    // A screenshot row whose share count could not be read is kept for the
+    // verification step instead of being dropped; it cannot be merged with a
+    // priced lot, so it gets its own slot.
+    if (!Number.isFinite(position.quantity)) {
+      merged.set(`incomplete:${index}`, { ...position, lots: 1, costComplete: position.avgCost !== null });
+      return;
+    }
+    const key = `position:${position.symbol}|${position.currency}`;
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, { ...position, lots: 1, costComplete: position.avgCost !== null });
-      continue;
+      return;
     }
     const totalQuantity = existing.quantity + position.quantity;
     const costComplete = existing.costComplete && position.avgCost !== null;
@@ -329,14 +378,14 @@ function mergePositions(positions, warnings) {
       lots: existing.lots + 1,
     });
     warn(warnings, `${existing.symbol} appeared in more than one row and was merged into a single position.`);
-  }
+  });
 
   return [...merged.values()]
     .filter((position) => position.quantity !== 0)
     .map(({ lots, costComplete, ...position }) => position);
 }
 
-function normalizeRecord(record, warnings) {
+function normalizeRecord(record, warnings, { allowIncomplete = false } = {}) {
   const symbol = cleanSymbol(record.symbol);
   if (!symbol || IGNORED_SYMBOLS.has(symbol.replace(/\s+/g, ''))) return null;
   if (!SYMBOL_RE.test(symbol)) {
@@ -346,7 +395,10 @@ function normalizeRecord(record, warnings) {
   const quantity = parseNumber(record.quantity);
   const assetType = String(record.assetType || '').trim() || null;
   const cashLike = isCashSymbol(symbol, assetType);
-  if (!cashLike && quantity === null) throw new Error('missing share quantity');
+  // The screenshot path keeps an identified line even when the share count was
+  // blurry, so the user can fill it in on the verification table; a broker
+  // file still rejects the row because it has no human in the loop.
+  if (!cashLike && quantity === null && !allowIncomplete) throw new Error('missing share quantity');
   if (!cashLike && quantity === 0) throw new Error('zero quantity');
 
   const currency = String(record.currency || '').trim().toUpperCase() || 'USD';
@@ -360,12 +412,14 @@ function normalizeRecord(record, warnings) {
     const value =
       parseNumber(record.marketValue) ??
       parseNumber(record.totalCost) ??
-      (units > 0 ? Math.abs(units) * (cashCost > 0 ? cashCost : 1) : Math.abs(cashCost));
+      (units !== 0 ? units * (cashCost > 0 ? cashCost : 1) : cashCost);
     const cashCurrency = FIAT.has(symbol) ? symbol : currency || 'USD';
     return {
       cash: {
         currency: cashCurrency === 'GBX' ? 'GBP' : cashCurrency,
-        value: Math.abs(Number(value) || 0),
+        // A negative balance is a margin debit, not spending money: keeping
+        // the sign is what makes the total portfolio value honest.
+        value: Number(value) || 0,
         label: symbol === 'CASH' ? String(record.name || 'Cash').trim() || 'Cash' : symbol,
       },
     };
@@ -374,7 +428,7 @@ function normalizeRecord(record, warnings) {
   const avgCostInput = parseNumber(record.averageCost);
   const totalCost = parseNumber(record.totalCost);
   let avgCost = avgCostInput;
-  if (avgCost === null && totalCost !== null && quantity !== 0) {
+  if (avgCost === null && totalCost !== null && quantity !== null && quantity !== 0) {
     avgCost = Math.abs(totalCost / quantity);
   }
   if (avgCost !== null && avgCost <= 0) avgCost = null;
@@ -383,7 +437,7 @@ function normalizeRecord(record, warnings) {
     position: {
       symbol,
       name: String(record.name || '').replace(/\s+/g, ' ').trim().slice(0, 80) || symbol,
-      quantity: Number(quantity.toFixed(6)),
+      quantity: quantity === null ? null : Number(quantity.toFixed(6)),
       avgCost: avgCost === null ? null : Number(avgCost.toFixed(6)),
       currency,
       assetType,
@@ -491,7 +545,7 @@ function mergeCash(entries) {
 }
 
 /** Accept an already-structured holdings array (JSON upload or API caller). */
-export function parsePortfolioHoldings(holdings, { fileName = 'portfolio.json' } = {}) {
+export function parsePortfolioHoldings(holdings, { fileName = 'portfolio.json', allowIncomplete = false } = {}) {
   if (!Array.isArray(holdings)) throw new Error('holdings must be an array');
   const warnings = [];
   const ignored = [];
@@ -504,9 +558,10 @@ export function parsePortfolioHoldings(holdings, { fileName = 'portfolio.json' }
       return;
     }
     const record = {
-      symbol: item.symbol ?? item.ticker,
-      quantity: item.quantity ?? item.qty ?? item.shares ?? item.units,
-      averageCost: item.avgCost ?? item.averageCost ?? item.avgPrice ?? item.pricePaid,
+      symbol: item.symbol ?? item.ticker ?? item.tickerSymbol ?? item.stock,
+      quantity: item.quantity ?? item.qty ?? item.shares ?? item.shareCount ?? item.sharesHeld ?? item.units,
+      averageCost:
+        item.avgCost ?? item.averageCost ?? item.avgPrice ?? item.averagePrice ?? item.pricePaid ?? item.unitCost,
       totalCost: item.totalCost ?? item.costBasis,
       marketValue: item.marketValue ?? item.value,
       name: item.name,
@@ -515,7 +570,7 @@ export function parsePortfolioHoldings(holdings, { fileName = 'portfolio.json' }
       sector: item.sector,
     };
     try {
-      const parsed = normalizeRecord(record, warnings);
+      const parsed = normalizeRecord(record, warnings, { allowIncomplete });
       if (!parsed) return;
       if (parsed.cash) cash.push(parsed.cash);
       if (parsed.position) positions.push(parsed.position);
@@ -527,6 +582,10 @@ export function parsePortfolioHoldings(holdings, { fileName = 'portfolio.json' }
   if (!positions.length && !cash.length) throw new Error('No holdings found in that file.');
 
   const merged = mergePositions(positions, warnings);
+  const missingQuantity = merged.filter((position) => !Number.isFinite(position.quantity)).length;
+  if (missingQuantity) {
+    warn(warnings, `${missingQuantity} position${missingQuantity === 1 ? '' : 's'} have no readable share quantity — fill them in before reviewing.`);
+  }
   const missingCost = merged.filter((position) => position.avgCost === null).length;
   if (missingCost) {
     warn(warnings, `${missingCost} position${missingCost === 1 ? '' : 's'} have no cost basis — unrealized P/L is unavailable for them.`);
@@ -544,8 +603,8 @@ export function parsePortfolioHoldings(holdings, { fileName = 'portfolio.json' }
   };
 }
 
-export function parsePortfolioFile({ fileName = 'portfolio.csv', content, holdings } = {}) {
-  if (Array.isArray(holdings)) return parsePortfolioHoldings(holdings, { fileName });
+export function parsePortfolioFile({ fileName = 'portfolio.csv', content, holdings, allowIncomplete = false } = {}) {
+  if (Array.isArray(holdings)) return parsePortfolioHoldings(holdings, { fileName, allowIncomplete });
   const text = String(content ?? '').trim();
   if (!text) throw new Error('Attach a portfolio file or a holdings list.');
   if (text.startsWith('{') || text.startsWith('[')) {
@@ -760,7 +819,7 @@ export function buildPortfolioReview({
     } else if (row.stopBreached) {
       recommendation = 'exit';
       reason = `Price is through the plan stop at ${row.stopLoss}. The setup is invalidated — cut or fully hedge it.`;
-    } else if (row.call === 'sell') {
+    } else if (row.call === 'sell' && !short) {
       recommendation = 'exit';
       reason = 'Engine call is Sell (trend break). This is a risk exit, not a short recommendation.';
     } else if (short && (row.call === 'buy' || row.call === 'accumulate')) {
@@ -778,6 +837,12 @@ export function buildPortfolioReview({
     } else if (!short && (row.call === 'buy' || row.call === 'accumulate') && (row.weightPct ?? 100) < 10) {
       recommendation = 'add';
       reason = `Call is ${row.callLabel} and the name is only ${(row.weightPct ?? 0).toFixed(1)}% of the book — there is room to build toward 10%.`;
+    } else if (short && row.call === 'sell') {
+      // A Sell call on a short position means the downtrend is still working.
+      // Telling the holder to "exit" there would cover a winning trade on the
+      // same evidence that opened it; only size risk can trim it (above).
+      recommendation = 'hold';
+      reason = 'Engine call is Sell (trend break) and this position is short — the move is with you. Keep it, trail the stop above, and cover when the trend turns.';
     } else if (row.call === 'hold') {
       recommendation = 'hold';
       reason = 'Call is Hold (extended uptrend). Keep the position, do not add, and trail the stop.';
@@ -849,7 +914,9 @@ export function buildPortfolioReview({
       symbols: stopBreaches.map((row) => row.symbol),
     });
   }
-  const sells = rows.filter((row) => row.call === 'sell');
+  // Only long holdings are at risk from a Sell call; a short with the same call
+  // is a working trend, not an exit.
+  const sells = rows.filter((row) => row.call === 'sell' && !row.short);
   if (sells.length) {
     flags.push({
       code: 'sell-call',

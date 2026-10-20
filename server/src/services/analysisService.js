@@ -115,6 +115,7 @@ const compactSignal = (analysis, sparkline) => ({
   name: analysis.name,
   quoteType: analysis.quoteType,
   price: analysis.price,
+  change: analysis.change,
   changePercent: analysis.changePercent,
   score: analysis.score.total,
   signal: analysis.signal,
@@ -157,7 +158,7 @@ export async function scanSymbols(symbols = DEFAULT_SCAN_UNIVERSE, { maxSymbols 
   const cap = Math.min(Math.max(Number(maxSymbols) || MAX_SCAN_SYMBOLS, 1), 200);
   const universe = [...new Set(symbols.map((symbol) => symbol.toUpperCase()))].slice(0, cap);
   const key = `scan:${[...universe].sort().join(',')}`;
-  return cache.wrap(key, config.cache.scanTtl, async () => {
+  return cache.wrap(key, Math.min(config.cache.scanTtl, config.cache.quoteTtl), async () => {
     const quotes = await getQuotes(universe);
     const bench = await benchmarkHistory();
     const run = async (quote) => {

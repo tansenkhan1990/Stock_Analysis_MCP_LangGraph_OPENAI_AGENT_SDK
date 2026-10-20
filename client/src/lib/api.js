@@ -92,6 +92,11 @@ export const api = {
 
   portfolioParse: ({ fileName, content, holdings }) =>
     request('/portfolio/parse', { method: 'POST', body: JSON.stringify({ fileName, content, holdings }) }),
+  portfolioExtractImage: ({ fileName, mimeType, data }) =>
+    request('/portfolio/extract-image', {
+      method: 'POST',
+      body: JSON.stringify({ image: { fileName, mimeType, data } }),
+    }),
   portfolioReview: ({ fileName, content, holdings }) =>
     request('/portfolio/review', { method: 'POST', body: JSON.stringify({ fileName, content, holdings }) }),
 

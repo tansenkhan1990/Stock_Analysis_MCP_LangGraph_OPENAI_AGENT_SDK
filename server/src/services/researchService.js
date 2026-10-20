@@ -1,3 +1,4 @@
+import { config } from '../config.js';
 import { describeProvider } from '../agent/providers.js';
 import { peekDecision, ruleEngineMeta, symbolAiDecision, withDeskDecision } from '../agent/symbolDesk.js';
 import { ACTION_RANK, buildAlert } from '../analytics/alert.js';
@@ -16,7 +17,7 @@ import { getAnalysis } from './analysisService.js';
 import { getHistoryForSymbols, getMarketHistory } from './marketHistoryService.js';
 import { getNewsHistory } from './newsHistoryService.js';
 
-const BOARD_TTL = 5 * 60_000;
+const BOARD_TTL = Math.min(5 * 60_000, config.cache.quoteTtl);
 const DECISION_TTL = 30 * 60_000;
 
 const compactPlan = (analysis) => ({
@@ -113,7 +114,7 @@ export async function getFocusBoard({ symbols } = {}) {
         if (!quote?.price) return null;
 
         const [history, fundamentals, news, history7d] = await Promise.all([
-          getHistory(meta.symbol, { range: '2y', interval: '1d' }).catch(() => null),
+          getHistory(meta.symbol, { range: '1y', interval: '1d' }).catch(() => null),
           // ETFs use the same payload for fund quality, so fetch it for both.
           getFundamentals(meta.symbol).catch(() => null),
           getNewsDigest(meta.symbol, meta.name, { withContent: false }).catch(() => null),
@@ -122,7 +123,9 @@ export async function getFocusBoard({ symbols } = {}) {
         ]);
         if (!history) return null;
 
-        const analysis = buildAnalysis({ quote, history, fundamentals, benchmark });
+        // Keep technical scores and price levels on the same inputs as the Hot
+        // Stocks scan; fundamentals still inform the separate analyst/event read.
+        const analysis = buildAnalysis({ quote, history, fundamentals: null, benchmark });
         const analyst = analyzeAnalystActions(fundamentals?.analystActionsRaw || []);
         const event = eventRisk(fundamentals);
         const signal = combinedSignal({ analysis, news, analyst, event });

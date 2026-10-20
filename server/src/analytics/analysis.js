@@ -456,8 +456,23 @@ export function buildAnalysis({ quote, history, fundamentals = null, benchmark =
   // other. A confirmed downtrend now produces downside levels, a stop above
   // spot and a bearish invalidation, which is what the Sell label means.
   const trendDownRegime = below200 === true && sma50 !== null && sma200 !== null && sma50 < sma200;
-  const direction = trendDownRegime || totalScore < 45 ? 'short' : 'long';
-  const bullish = totalScore >= 56;
+  // The plan must agree with the call. The action is the regime rule in
+  // alert.js, so a Buy/Accumulate name needs an accumulation range even when
+  // the quality score sits just below the 56 cutoff — otherwise the card says
+  // "Buy" with no price to buy in, and the Hot Stocks board (which needs a band
+  // to rank an actionable name) silently drops a name the Focus board shows.
+  // Only the regime is read here; the final alert below still sees the plan.
+  const entryCall = ['buy', 'accumulate'].includes(
+    buildAlert({
+      analysis: {
+        price,
+        indicators: { sma50, sma200, rsi14: rsiValue, adx14: adxValue, volumeRatio },
+        plan: null,
+      },
+    })?.action,
+  );
+  const direction = trendDownRegime ? 'short' : entryCall || totalScore >= 45 ? 'long' : 'short';
+  const bullish = direction === 'long' && (totalScore >= 56 || entryCall);
 
   // ---------- Entry, targets, stop ----------
   const nearestSupport = supports[0]?.level ?? null;

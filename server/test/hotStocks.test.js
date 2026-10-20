@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildHotStock, rankHotStocks } from '../src/analytics/hotStocks.js';
+import { applyFocusDecision } from '../src/services/hotStocksService.js';
 
 const baseSignal = {
   symbol: 'NVDA',
   name: 'NVIDIA Corporation',
   quoteType: 'EQUITY',
   price: 100,
+  change: -1.22,
   changePercent: -1.2,
   score: 72,
   conviction: 68,
@@ -29,6 +31,8 @@ const baseSignal = {
 
 test('a buy signal inside its zone is marked buy-now and scored with a timing bonus', () => {
   const stock = buildHotStock(baseSignal);
+  assert.equal(stock.change, -1.22);
+  assert.equal(stock.changePercent, -1.2);
   assert.equal(stock.buyNow, true);
   assert.equal(stock.waitFor, null);
   assert.equal(stock.hotScore, 75); // 72*0.6 + 68*0.25 + 15 timing bonus
@@ -40,6 +44,31 @@ test('a buy signal inside its zone is marked buy-now and scored with a timing bo
   assert.match(stock.why, /Uptrend pullback/);
   assert.match(stock.why, /RSI 41\.2/);
   assert.match(stock.why, /14% to T2/);
+});
+
+test('a tracked name carries the Focus board call, conviction and chance to rise', () => {
+  const signal = { ...baseSignal, action: 'hold', actionLabel: 'Hold', conviction: 61 };
+  const focusRow = {
+    symbol: 'NVDA',
+    decision: { action: 'buy', actionLabel: 'Buy', conviction: 74, setup: 'pullback', setupLabel: 'Uptrend pullback' },
+    growthProbability: 71,
+    growthBand: 'high',
+  };
+
+  const merged = applyFocusDecision(signal, focusRow);
+  assert.equal(merged.action, 'buy');
+  assert.equal(merged.conviction, 74);
+  assert.equal(merged.growthProbability, 71);
+
+  const stock = buildHotStock(merged);
+  assert.equal(stock.action, 'buy', 'the board publishes the call Focus shows');
+  assert.equal(stock.conviction, 74);
+  assert.equal(stock.growthProbability, 71, 'the chance to rise is the Focus number, not a recomputation');
+  assert.equal(stock.growthBand, 'high');
+  assert.equal(stock.hotScore, 77); // 72*0.6 + 74*0.25 + 15 timing bonus
+
+  // A name with no Focus row is left untouched.
+  assert.equal(applyFocusDecision(signal, null), signal);
 });
 
 test('every ranked row carries the blended chance to rise', () => {

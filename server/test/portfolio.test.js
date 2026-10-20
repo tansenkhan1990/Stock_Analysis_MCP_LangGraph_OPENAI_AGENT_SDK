@@ -10,7 +10,9 @@ import {
   parsePortfolioFile,
   parsePortfolioText,
   portfolioPromptLine,
+  salvageTicker,
 } from '../src/analytics/portfolio.js';
+import { parsePortfolioImageResult, parsePortfolioTranscription } from '../src/services/portfolioService.js';
 
 const csv = `Account,ISA
 As of,2026-10-17
@@ -108,6 +110,154 @@ test('JSON holdings use the same aliases and validation', () => {
   assert.equal(parsed.positions.length, 2);
   assert.equal(parsed.positions.find((position) => position.symbol === 'NVDA').quantity, 3);
   assert.equal(parsed.positions.find((position) => position.symbol === 'MSFT').avgCost, 400);
+});
+
+test('portfolio screenshot extraction accepts JSON and fenced JSON but requires readable positions', () => {
+  const parsed = parsePortfolioImageResult(
+    '```json\n{"holdings":[{"symbol":"aapl","quantity":10,"avgCost":180.5}]}\n```',
+    { fileName: 'broker.png' },
+  );
+  assert.equal(parsed.fileName, 'broker.png');
+  assert.deepEqual(
+    parsed.positions.map(({ symbol, quantity, avgCost }) => ({ symbol, quantity, avgCost })),
+    [{ symbol: 'AAPL', quantity: 10, avgCost: 180.5 }],
+  );
+
+  assert.throws(() => parsePortfolioImageResult('not json'), /clearer or closer image/i);
+  assert.throws(() => parsePortfolioImageResult('{"holdings":[]}'), /No stock or ETF positions were readable/i);
+});
+
+test('salvageTicker recovers a ticker from noisy screenshot cells', () => {
+  assert.equal(salvageTicker('AAPL - Apple Inc.'), 'AAPL');
+  assert.equal(salvageTicker('NVIDIA Corp. (NVDA)'), 'NVDA');
+  assert.equal(salvageTicker('NYSE:TSM'), 'TSM');
+  assert.equal(salvageTicker('aapl'), 'AAPL');
+  assert.equal(salvageTicker('BRK/B'), 'BRK-B');
+  assert.equal(salvageTicker('Apple Inc.'), '');
+  assert.equal(salvageTicker('Total'), '');
+});
+
+test('a screenshot row with a blurry share count is kept for verification', () => {
+  const parsed = parsePortfolioImageResult(
+    JSON.stringify({
+      holdings: [
+        { instrument: 'AAPL - Apple Inc.', shares: '40 shares' },
+        { tickerSymbol: 'NVIDIA Corp. (NVDA)', quantity: null },
+        { symbol: 'Apple Inc.' },
+      ],
+    }),
+    { fileName: 'broker.png' },
+  );
+  assert.deepEqual(
+    parsed.positions.map((position) => [position.symbol, position.quantity]),
+    [
+      ['AAPL', 40],
+      ['NVDA', null],
+    ],
+  );
+  assert.ok(parsed.warnings.some((warning) => /share quantity/i.test(warning)));
+  assert.equal(parsed.ignored.length, 1);
+  assert.ok(parsed.ignored[0].line > 0);
+});
+
+test('screenshot extraction survives prose, reads cash and keeps shorts negative', () => {
+  const parsed = parsePortfolioImageResult(
+    'Here are the holdings I can read:\n' +
+      '{"holdings":[{"symbol":"TSLA","quantity":12},{"symbol":"AMD","quantity":-5,"avgCost":"$240.10"}],' +
+      '"cash":[{"currency":"usd","value":"1,850.00"},{"value":-250}]}\n' +
+      'I left the blurry rows out.',
+    { fileName: 'broker.png' },
+  );
+  assert.deepEqual(
+    parsed.positions.map(({ symbol, quantity }) => ({ symbol, quantity })),
+    [
+      { symbol: 'TSLA', quantity: 12 },
+      { symbol: 'AMD', quantity: -5 },
+    ],
+  );
+  assert.equal(parsed.positions[1].avgCost, 240.1, 'currency symbols are stripped from cost basis');
+  assert.equal(parsed.cash.length, 1);
+  assert.equal(parsed.cash[0].value, 1600, 'cash rows merge by currency, debit included');
+});
+
+test('a non-JSON table from the vision model is still readable', () => {
+  const parsed = parsePortfolioImageResult(
+    'TICKER | QUANTITY | AVG COST | CURRENCY | NAME\nAAPL | 40 | 180.50 | USD | Apple Inc.\nNVDA | 3 | 118.20 | USD | NVIDIA Corp.\n',
+    { fileName: 'broker.png' },
+  );
+  assert.deepEqual(
+    parsed.positions.map(({ symbol, quantity, avgCost }) => ({ symbol, quantity, avgCost })),
+    [
+      { symbol: 'AAPL', quantity: 40, avgCost: 180.5 },
+      { symbol: 'NVDA', quantity: 3, avgCost: 118.2 },
+    ],
+  );
+});
+
+test('transcription fallback handles unreadable cells, prose and blank replies', () => {
+  const parsed = parsePortfolioTranscription(
+    'Here is what I can read:\n```\nAAPL | ? | ? | USD | Apple Inc.\nMSFT  12  410.25\nNOTHING\n```\n',
+    { fileName: 'broker.png' },
+  );
+  assert.deepEqual(
+    parsed.positions.map(({ symbol, quantity }) => [symbol, quantity]),
+    [
+      ['AAPL', null],
+      ['MSFT', 12],
+    ],
+  );
+  assert.ok(parsed.warnings.some((warning) => /share quantity/i.test(warning)));
+  assert.equal(parsePortfolioTranscription('NOTHING'), null);
+  assert.equal(parsePortfolioTranscription('   '), null);
+});
+
+test('a name-only row adopts a ticker resolved from the company name', () => {
+  const tickersByName = new Map([['apple', 'AAPL']]);
+  const fromJson = parsePortfolioImageResult(
+    JSON.stringify({ holdings: [{ name: 'Apple Inc.', quantity: 12 }] }),
+    { fileName: 'broker.png', tickersByName },
+  );
+  assert.deepEqual(
+    fromJson.positions.map(({ symbol, quantity }) => [symbol, quantity]),
+    [['AAPL', 12]],
+  );
+
+  // Many European brokers print only the company name on the row.
+  const fromTable = parsePortfolioTranscription('Apple Inc. | 12 | 180.50 | USD\n', {
+    fileName: 'broker.png',
+    tickersByName,
+  });
+  assert.deepEqual(
+    fromTable.positions.map(({ symbol, quantity }) => [symbol, quantity]),
+    [['AAPL', 12]],
+  );
+});
+
+test('a company name in the symbol cell is looked up, not read as a ticker', () => {
+  // "NVIDIA" is not a listed ticker; the row must resolve to NVDA instead.
+  assert.throws(
+    () => parsePortfolioImageResult(JSON.stringify({ holdings: [{ symbol: 'NVIDIA Corp.', quantity: 25 }] })),
+    (error) => error.unresolved?.[0] === 'NVIDIA Corp.',
+  );
+  const resolved = parsePortfolioImageResult(
+    JSON.stringify({ holdings: [{ symbol: 'NVIDIA Corp.', quantity: 25 }] }),
+    { fileName: 'broker.png', tickersByName: new Map([['nvidia', 'NVDA']]) },
+  );
+  assert.equal(resolved.positions[0].symbol, 'NVDA');
+});
+
+test('name-only rows are reported for a lookup instead of silently dropped', () => {
+  assert.throws(
+    () => parsePortfolioImageResult(JSON.stringify({ holdings: [{ name: 'Apple Inc.' }] })),
+    (error) => error.unresolved?.[0] === 'Apple Inc.',
+  );
+  const table = parsePortfolioTranscription('Apple Inc. | 12\n');
+  assert.deepEqual(table.unresolved, ['Apple Inc.']);
+});
+
+test('a negative cash row is a margin debit, not flipped into a credit', () => {
+  const parsed = parsePortfolioText('Ticker,Quantity,Avg price\nAAPL,10,100\nCASH,-500,,USD\n');
+  assert.equal(parsed.cash[0].value, -500);
 });
 
 const quote = (symbol, price, changePercent = 1, quoteType = 'EQUITY') => ({
@@ -218,6 +368,24 @@ test('a Sell call is an exit even when the stop has not been hit yet', () => {
   const row = review.positions[0];
   assert.equal(row.recommendation, 'exit');
   assert.match(row.recommendationReason, /risk exit|trend break/i);
+});
+
+test('a Sell call on a short position is a hold, not an exit', () => {
+  const review = buildPortfolioReview({
+    positions: [{ symbol: 'TSLA', quantity: -4, avgCost: 300, currency: 'USD' }],
+    quotes: { TSLA: quote('TSLA', 250) },
+    analyses: { TSLA: analysis({ action: 'sell', stopLoss: 265, direction: 'short', targets: [220] }) },
+    cash: [{ currency: 'USD', value: 10000 }],
+  });
+  const row = review.positions[0];
+  assert.equal(row.recommendation, 'hold');
+  assert.match(row.recommendationReason, /short/i);
+  assert.equal(row.trimShares, null);
+  assert.equal(
+    review.flags.some((flag) => flag.code === 'sell-call'),
+    false,
+    'a short working with the trend is not tagged for an exit',
+  );
 });
 
 test('a short position is never told to add and exits when the call turns bullish', () => {
