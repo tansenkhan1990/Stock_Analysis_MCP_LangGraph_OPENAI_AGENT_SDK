@@ -343,7 +343,9 @@ export async function runHotStocksOutlook({
       model: provider.model,
       analysed: rows.length,
       latencyMs: Date.now() - started,
-      errors: errors.slice(0, 3),
+      // A rejected key fails every batch with the same message; showing it once
+      // beats repeating it per batch.
+      errors: [...new Set(errors)].slice(0, 3),
     };
   };
 
