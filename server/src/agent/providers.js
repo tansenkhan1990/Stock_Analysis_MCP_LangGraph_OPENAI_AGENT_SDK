@@ -33,6 +33,30 @@ const parseArgs = (raw) => {
   }
 };
 
+/**
+ * A rejected credential cannot start working while the process runs — `.env` is
+ * read once at boot. Remember the failure for a few minutes so every desk
+ * surface reports the clear error instead of calling the provider (and getting
+ * the same 401) again on each page poll.
+ */
+const AUTH_FAILURE_TTL = 5 * 60_000;
+let authFailure = null;
+
+const AUTH_ENV_VARS = {
+  openai: 'OPENAI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+};
+
+/** Name the credential the user has to replace, not just the provider's JSON. */
+function authErrorMessage(status, statusText, body) {
+  const envVar = AUTH_ENV_VARS[config.llm.provider];
+  return (
+    `${status} ${statusText}: ${body} — ${envVar} was rejected ` +
+    '(revoked, expired or from a deleted account). Update it in .env and restart the API.'
+  );
+}
+
 async function postJSON(url, body, headers = {}, timeout = 90_000) {
   const response = await fetch(url, {
     method: 'POST',
@@ -42,7 +66,13 @@ async function postJSON(url, body, headers = {}, timeout = 90_000) {
   });
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 300)}`);
+    const body = text.slice(0, 220);
+    if (AUTH_ENV_VARS[config.llm.provider] && (response.status === 401 || response.status === 403)) {
+      const message = authErrorMessage(response.status, response.statusText, body);
+      authFailure = { message, at: Date.now() };
+      throw new Error(message);
+    }
+    throw new Error(`${response.status} ${response.statusText}: ${body}`);
   }
   try {
     return JSON.parse(text);
@@ -210,6 +240,10 @@ export async function chatWithLLM({ messages, tools, timeoutMs }) {
   const provider = config.llm.provider;
   const started = Date.now();
   const timeout = timeoutMs || 90_000;
+
+  if (authFailure && Date.now() - authFailure.at < AUTH_FAILURE_TTL) {
+    throw new Error(authFailure.message);
+  }
 
   if (provider === 'openai') {
     const data = await postJSON(
