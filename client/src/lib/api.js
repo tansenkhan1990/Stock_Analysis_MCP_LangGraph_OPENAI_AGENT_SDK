@@ -47,6 +47,15 @@ export const api = {
 
   dayTrade: (symbol, { refresh = false, ai } = {}) =>
     request(`/daytrade/${symbol}${qs({ refresh: refresh ? 1 : undefined, ai: ai === undefined ? undefined : ai ? 1 : 0 })}`),
+  dayTradeBoard: ({ symbols, scope, depth, refresh = false } = {}) =>
+    request(
+      `/daytrade/board${qs({
+        symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+        scope,
+        depth,
+        refresh: refresh ? 1 : undefined,
+      })}`,
+    ),
   analysis: (symbol, { options = true, persist = false, refresh = false } = {}) =>
     request(`/analysis/${symbol}${qs({ options: options ? 1 : 0, persist: persist ? 1 : 0, refresh: refresh ? 1 : 0 })}`),
   scan: (symbols) => request(`/scan${qs({ symbols: Array.isArray(symbols) ? symbols.join(',') : symbols })}`),

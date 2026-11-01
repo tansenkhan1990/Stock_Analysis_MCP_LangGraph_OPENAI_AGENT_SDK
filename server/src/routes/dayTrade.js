@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { asyncHandler, normalizeSymbol } from '../lib/errors.js';
-import { getDayTrade } from '../services/dayTradeService.js';
+import { getDayTrade, getDayTradeBoard } from '../services/dayTradeService.js';
 
 export const dayTradeRouter = Router();
 
@@ -10,6 +10,21 @@ const parseAi = (value) => {
   if (value === '0' || value === 'false') return false;
   return undefined;
 };
+
+/** `/board` must sit before `/:symbol` or Express would read it as a ticker. */
+dayTradeRouter.get(
+  '/board',
+  asyncHandler(async (req, res) => {
+    res.json(
+      await getDayTradeBoard({
+        symbols: req.query.symbols ? String(req.query.symbols).split(',') : [],
+        scope: req.query.scope ? String(req.query.scope) : 'market',
+        depth: req.query.depth,
+        refresh: req.query.refresh === '1',
+      }),
+    );
+  }),
+);
 
 dayTradeRouter.get(
   '/:symbol',

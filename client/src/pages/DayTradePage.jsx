@@ -104,6 +104,9 @@ export default function DayTradePage({ symbol, go }) {
           </p>
         </div>
         <div className="head-actions">
+          <button type="button" className="btn btn-ghost" onClick={() => go('/daytrade')}>
+            ← Best setups
+          </button>
           <SearchBox compact onSelect={(next) => go(`/daytrade/${next}`)} placeholder="Ticker…" />
           <button type="button" className="btn btn-ghost" onClick={() => load(true)} disabled={refreshing}>
             <span className={refreshing ? 'spin' : ''}>↻</span> Refresh

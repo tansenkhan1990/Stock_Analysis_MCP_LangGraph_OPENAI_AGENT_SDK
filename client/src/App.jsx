@@ -7,6 +7,7 @@ import { api } from './lib/api.js';
 import AgentPage from './pages/AgentPage.jsx';
 import AnalyzerPage from './pages/AnalyzerPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
+import DayTradeBoardPage from './pages/DayTradeBoardPage.jsx';
 import DayTradePage from './pages/DayTradePage.jsx';
 import HotStocksPage from './pages/HotStocksPage.jsx';
 import FocusPage from './pages/FocusPage.jsx';
@@ -28,7 +29,7 @@ const TABS = [
   { id: 'focus', label: 'Focus List', path: '/', icon: '◎' },
   { id: 'hot', label: 'Hot Stocks', path: '/hot', icon: '⇗' },
   { id: 'portfolio', label: 'Portfolio', path: '/portfolio', icon: '▤' },
-  { id: 'daytrade', label: 'Day Trading', path: '/daytrade/NVDA', icon: '⚡' },
+  { id: 'daytrade', label: 'Day Trading', path: '/daytrade', icon: '⚡' },
   { id: 'market', label: 'Market', path: '/market', icon: '◧' },
   { id: 'analyze', label: 'Analyzer', path: '/analyze/NVDA', icon: '◔' },
   { id: 'options', label: 'Options Lab', path: '/options/NVDA', icon: '⌁' },
@@ -92,7 +93,8 @@ export default function App() {
       case 'portfolio':
         return <PortfolioPage health={health} />;
       case 'daytrade':
-        return <DayTradePage symbol={route.param || 'NVDA'} go={go} />;
+        // No ticker in the URL = the best-setups board; a ticker = its read.
+        return route.param ? <DayTradePage symbol={route.param} go={go} /> : <DayTradeBoardPage go={go} />;
       case 'analyze':
         return <AnalyzerPage symbol={route.param || 'NVDA'} go={go} />;
       case 'options':

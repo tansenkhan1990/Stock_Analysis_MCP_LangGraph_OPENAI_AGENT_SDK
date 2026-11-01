@@ -5793,3 +5793,116 @@ a {
     width: 100%;
   }
 }
+
+/* ============ Day trading: best-setups board ============ */
+.day-board-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.day-board-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--muted-2);
+}
+.day-board-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.day-board-count {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 13px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(150, 163, 184, 0.04);
+}
+.day-board-count span {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.day-board-count strong {
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--text);
+}
+.day-board-count.buy strong {
+  color: var(--up);
+}
+.day-board-count.sell strong {
+  color: var(--down);
+}
+.day-board-count.wait strong {
+  color: var(--warn);
+}
+.day-board {
+  min-width: 1180px;
+}
+.day-board .rank-cell {
+  width: 28px;
+  font-family: var(--mono);
+  color: var(--muted-2);
+}
+.day-board .ticker-cell {
+  min-width: 132px;
+}
+.day-board-setup {
+  min-width: 176px;
+  max-width: 230px;
+  white-space: normal;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.day-board-why {
+  display: block;
+  margin-top: 2px;
+  font-size: 9.5px;
+  color: var(--muted-2);
+}
+.day-board .signal-pill.wait {
+  color: var(--warn);
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.28);
+}
+.day-board-targets {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.day-board-trigger {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted-2);
+}
+.day-board-open {
+  width: 22px;
+  text-align: right;
+  color: var(--muted-2);
+}
+.day-board-note {
+  margin: 14px 0 0;
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .day-board-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+  .day-board-meta {
+    margin-left: 0;
+  }
+}
