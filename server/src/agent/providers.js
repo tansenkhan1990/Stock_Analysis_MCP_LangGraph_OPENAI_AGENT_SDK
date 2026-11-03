@@ -57,13 +57,58 @@ function authErrorMessage(status, statusText, body) {
   );
 }
 
+/** The endpoint without credentials — Gemini carries its key in the query string. */
+function endpointLabel(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}`;
+  } catch {
+    return String(url);
+  }
+}
+
+/**
+ * A DNS, connection, TLS or offline failure rejects fetch with a bare TypeError
+ * "fetch failed" and keeps the real reason (ENOTFOUND, ECONNREFUSED, a TLS
+ * error) on `.cause`. Passing that wrapper through tells the user nothing —
+ * every desk surface would only ever show "fetch failed" — so name the
+ * provider, the endpoint and the underlying code instead. A provider timeout
+ * (AbortSignal.timeout rejects with a TimeoutError) becomes its own message.
+ */
+function networkErrorMessage(error, url, timeout) {
+  const provider = config.llm.provider;
+  const target = endpointLabel(url);
+  const cause = error?.cause;
+  const code = String(cause?.code || cause?.errno || '').trim();
+  const reason = String(cause?.message || error?.message || '').trim();
+
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError' || /timed? ?out|aborted/i.test(reason)) {
+    return `no answer from ${provider} at ${target} within ${Math.round(timeout / 1000)}s`;
+  }
+
+  const detail = [code, reason].filter((part) => part && part !== 'fetch failed').join(': ').slice(0, 160);
+  // A dropped socket happens mid-generation on a slow or overloaded model, so it
+  // needs a different hint from a connection that never opened at all.
+  const hint = /UND_ERR_SOCKET|ECONNRESET|EPIPE|socket hang up/i.test(detail)
+    ? '; the endpoint dropped the connection mid-answer — the model may be overloaded, or LLM_TIMEOUT_MS is too short for it'
+    : /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|CERT|SSL/i.test(detail)
+      ? '; check the base URL and that the provider is reachable from this machine'
+      : '';
+  return `could not reach ${provider} at ${target}${detail ? ` (${detail})` : ''}${hint}`;
+}
+
 async function postJSON(url, body, headers = {}, timeout = 90_000) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeout),
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeout),
+    });
+  } catch (error) {
+    throw new Error(networkErrorMessage(error, url, timeout));
+  }
   const text = await response.text();
   if (!response.ok) {
     const body = text.slice(0, 220);
@@ -239,7 +284,9 @@ export function describeProvider() {
 export async function chatWithLLM({ messages, tools, timeoutMs }) {
   const provider = config.llm.provider;
   const started = Date.now();
-  const timeout = timeoutMs || 90_000;
+  // A local or reasoning model can need minutes for a desk-sized dossier, so the
+  // default is configurable instead of hard-coded.
+  const timeout = timeoutMs || config.llm.timeoutMs;
 
   if (authFailure && Date.now() - authFailure.at < AUTH_FAILURE_TTL) {
     throw new Error(authFailure.message);
@@ -359,7 +406,8 @@ export async function chatWithLLM({ messages, tools, timeoutMs }) {
         options: { temperature: 0.2 },
       },
       {},
-      timeoutMs || 120_000,
+      // Local generation is slower than a hosted API; keep the longer floor.
+      timeoutMs || Math.max(config.llm.timeoutMs, 120_000),
     );
     const message = data.message || {};
     return {

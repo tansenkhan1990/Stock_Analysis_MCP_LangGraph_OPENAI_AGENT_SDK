@@ -36,16 +36,46 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const US_VENUE_RE = /nasdaq|nyse|amex|arca|bats|cboe/i;
 
-/** Only plain US-listed shares and ETFs can be scored by the daily engine. */
-export const isTradeableQuote = (quote, { minPrice = 3, minAverageVolume = 300_000 } = {}) => {
-  if (!quote?.symbol || !Number.isFinite(Number(quote.price)) || Number(quote.price) < minPrice) return false;
-  if (!['EQUITY', 'ETF'].includes(String(quote.quoteType || 'EQUITY').toUpperCase())) return false;
-  if (/[.=^]/.test(quote.symbol)) return false;
+/**
+ * The reputation gate every board shares. A name has to be a plain US-listed
+ * share or ETF, above $5, trading at least a million shares and $20M a day on
+ * average — the point is to keep penny stocks, leveraged products and thin
+ * micro caps off the boards entirely instead of ranking them.
+ */
+export const REPUTABLE_MIN_PRICE = 5;
+export const REPUTABLE_MIN_AVERAGE_VOLUME = 1_000_000;
+export const REPUTABLE_MIN_DOLLAR_VOLUME = 20_000_000;
+
+export const isReputableInstrument = (
+  quote,
+  {
+    minPrice = REPUTABLE_MIN_PRICE,
+    minAverageVolume = REPUTABLE_MIN_AVERAGE_VOLUME,
+    minDollarVolume = REPUTABLE_MIN_DOLLAR_VOLUME,
+    minMarketCap = 0,
+  } = {},
+) => {
+  if (!quote?.symbol) return false;
+  const price = Number(quote.price);
+  if (!Number.isFinite(price) || price < minPrice) return false;
+  const quoteType = String(quote.quoteType || 'EQUITY').toUpperCase();
+  if (!['EQUITY', 'ETF'].includes(quoteType)) return false;
+  // Structured/leveraged tickers and foreign suffixes are not cash US shares.
+  if (/[.=^]/.test(String(quote.symbol))) return false;
   if (quote.exchange && !US_VENUE_RE.test(quote.exchange)) return false;
   const averageVolume = Number(quote.averageVolume);
-  if (Number.isFinite(averageVolume) && averageVolume > 0 && averageVolume < minAverageVolume) return false;
+  if (!Number.isFinite(averageVolume) || averageVolume < minAverageVolume) return false;
+  if (price * averageVolume < minDollarVolume) return false;
+  // Funds have no market cap; only stocks have to clear that floor.
+  if (minMarketCap > 0 && quoteType !== 'ETF') {
+    const marketCap = Number(quote.marketCap);
+    if (!Number.isFinite(marketCap) || marketCap < minMarketCap) return false;
+  }
   return true;
 };
+
+/** Backwards-compatible name for the tape filter. */
+export const isTradeableQuote = (quote, options = {}) => isReputableInstrument(quote, options);
 
 /**
  * Cheap heat score used to decide WHO gets the expensive analysis. It rewards
@@ -88,8 +118,10 @@ export function buildMarketTape({
   curated = [],
   watchlist = [],
   limit = DEFAULT_MARKET_LIMIT,
-  minPrice = 3,
-  minAverageVolume = 300_000,
+  minPrice = REPUTABLE_MIN_PRICE,
+  minAverageVolume = REPUTABLE_MIN_AVERAGE_VOLUME,
+  minDollarVolume = REPUTABLE_MIN_DOLLAR_VOLUME,
+  minMarketCap = 0,
 } = {}) {
   const curatedSet = new Set(curated.map((item) => String(typeof item === 'string' ? item : item?.symbol || '').toUpperCase()));
   const watchSet = new Set(
@@ -131,7 +163,7 @@ export function buildMarketTape({
   };
 
   const addQuote = (quote) => {
-    if (!isTradeableQuote(quote, { minPrice, minAverageVolume })) return;
+    if (!isTradeableQuote(quote, { minPrice, minAverageVolume, minDollarVolume, minMarketCap })) return;
     const symbol = String(quote.symbol).toUpperCase();
     const volume = Number(quote.volume) || 0;
     const existing = rows.get(symbol);

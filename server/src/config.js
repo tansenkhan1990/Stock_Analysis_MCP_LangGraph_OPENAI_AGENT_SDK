@@ -66,6 +66,10 @@ export const config = {
   },
   llm: {
     provider: detectedProvider,
+    // Per-request budget for a provider call. A hosted model answers a desk
+    // dossier well inside a minute; a local reasoning model (Ollama, an
+    // OpenAI-compatible gateway) can need several, so raise it there.
+    timeoutMs: Math.max(1_000, num(process.env.LLM_TIMEOUT_MS, 90_000)),
     maxToolRounds: num(process.env.LLM_MAX_TOOL_ROUNDS, 5),
     openai: {
       apiKey: process.env.OPENAI_API_KEY || '',

@@ -7,7 +7,11 @@ import {
 import { eventRisk } from '../analytics/decision.js';
 import { rankDayTrades } from '../analytics/dayTradeBoard.js';
 import { buildDayTrade } from '../analytics/dayTrading.js';
-import { MARKET_SCREENS, buildMarketTape } from '../analytics/marketScreen.js';
+import {
+  REPUTABLE_MIN_AVERAGE_VOLUME,
+  REPUTABLE_MIN_PRICE,
+  isReputableInstrument,
+} from '../analytics/marketScreen.js';
 import { config } from '../config.js';
 import { HOT_UNIVERSE } from '../data/universe.js';
 import { cache } from '../lib/cache.js';
@@ -46,10 +50,6 @@ export const DAY_BOARD_SCOPES = ['market', 'focus'];
 // A day-trade needs a tight spread and real volume. These thresholds are what
 // separates "reputable" from "moves 40% on 200k shares", and they apply to
 // every scope — including explicit symbols — so junk can never reach the board.
-export const DAY_TRADE_MIN_PRICE = 5;
-export const DAY_TRADE_MIN_AVERAGE_VOLUME = 1_000_000;
-export const DAY_TRADE_MIN_DOLLAR_VOLUME = 20_000_000;
-
 /** Stocks and ETFs only — the board never reads an index, a fund of funds or a crypto pair. */
 export const DAY_TRADE_UNIVERSE = HOT_UNIVERSE.filter(
   (item) => item.kind === 'stock' || item.kind === 'etf',
@@ -57,17 +57,10 @@ export const DAY_TRADE_UNIVERSE = HOT_UNIVERSE.filter(
 
 const clamp01 = (value) => Math.min(1, Math.max(0, value));
 
-export const isReputableInstrument = (quote = {}) => {
-  const price = Number(quote.price);
-  if (!quote.symbol || !Number.isFinite(price) || price < DAY_TRADE_MIN_PRICE) return false;
-  if (!['EQUITY', 'ETF'].includes(String(quote.quoteType || 'EQUITY').toUpperCase())) return false;
-  // Structured/leveraged tickers and foreign suffixes are not cash US shares.
-  if (/[.=^]/.test(String(quote.symbol))) return false;
-  if (!isUsVenue(quote.exchange)) return false;
-  const averageVolume = Number(quote.averageVolume);
-  if (!Number.isFinite(averageVolume) || averageVolume < DAY_TRADE_MIN_AVERAGE_VOLUME) return false;
-  return price * averageVolume >= DAY_TRADE_MIN_DOLLAR_VOLUME;
-};
+// The gate itself lives in marketScreen.js so the day-trade board, the Hot
+// Stocks board and the scan API all use one definition of "reputable".
+// Re-exported here because this is the service the day-trade tests import.
+export { isReputableInstrument };
 
 export const relativeVolumeOf = (quote = {}) => {
   const averageVolume = Number(quote.averageVolume);
@@ -183,7 +176,7 @@ async function buildDayBoard({ scope, symbols, depth, refresh }) {
       if (!isReputableInstrument(quote)) {
         throw new HttpError(
           422,
-          `${symbol}: filtered — the board only reads US stocks and ETFs above $${DAY_TRADE_MIN_PRICE} with at least ${DAY_TRADE_MIN_AVERAGE_VOLUME / 1_000_000}M average shares a day`,
+          `${symbol}: filtered — the board only reads US stocks and ETFs above $${REPUTABLE_MIN_PRICE} with at least ${REPUTABLE_MIN_AVERAGE_VOLUME / 1_000_000}M average shares a day`,
         );
       }
       const history = await getHistory(symbol, { range: HISTORY_RANGE, interval: DAY_TRADE_INTERVAL });

@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { buildAnalysis } from '../analytics/analysis.js';
 import { ACTION_RANK } from '../analytics/alert.js';
+import { REPUTABLE_MIN_PRICE, isReputableInstrument } from '../analytics/marketScreen.js';
 import { eventRisk, pickPlanForAction } from '../analytics/decision.js';
 import { analyzeAnalystActions } from '../analytics/news.js';
 import { buildOptionPlans, daysToExpiry, summarizeChain } from '../analytics/options.js';
@@ -139,6 +140,16 @@ const compactSignal = (analysis, sparkline) => ({
   })),
   stopLoss: analysis.plan.stopLoss,
   riskReward: analysis.plan.riskReward,
+  // The same ratio measured from the live price: a fill at spot can earn less
+  // than the headline ratio, and a board should not advertise the chase.
+  riskRewardAtSpot: analysis.plan.riskRewardAtSpot ?? null,
+  adx14: analysis.indicators.adx14 ?? null,
+  atrPct: analysis.indicators.atrPct ?? null,
+  volumeRatio: analysis.indicators.volumeRatio ?? null,
+  aboveSma200:
+    analysis.indicators.sma200 === null || analysis.indicators.sma200 === undefined
+      ? null
+      : analysis.price > analysis.indicators.sma200,
   rsi: analysis.indicators.rsi14,
   trend:
     analysis.indicators.sma50 === null
@@ -162,6 +173,14 @@ export async function scanSymbols(symbols = DEFAULT_SCAN_UNIVERSE, { maxSymbols 
     const quotes = await getQuotes(universe);
     const bench = await benchmarkHistory();
     const run = async (quote) => {
+      // Every surface fed by this scan is a quality surface: a penny stock or a
+      // thin micro cap is reported as filtered instead of being scored.
+      if (!isReputableInstrument(quote)) {
+        throw new HttpError(
+          422,
+          `filtered — only liquid US stocks and ETFs above $${REPUTABLE_MIN_PRICE} with real average volume are scored`,
+        );
+      }
       const history = await getHistory(quote.symbol, { range: '1y', interval: '1d' });
       const analysis = buildAnalysis({ quote, history, fundamentals: null, benchmark: bench });
       const sparkline = history.bars.slice(-40).map((bar) => bar.close);

@@ -28,6 +28,17 @@ export const MAX_HOT_UNIVERSE = 48;
 export const HOT_SCOPES = ['market', 'broad', 'focus'];
 export const HOT_DEPTHS = [40, 60, DEFAULT_DEPTH, MAX_DEPTH];
 
+/**
+ * The Hot Stocks tape is a quality surface too. The screener still powers
+ * discovery, but a $10 name with $30M a day or a $300M micro cap that moves 40%
+ * on thin volume is exactly what this filter removes: a swing buy needs a real
+ * company and a real market. Funds carry no market cap and are exempt from
+ * that one floor.
+ */
+export const HOT_TAPE_MIN_PRICE = 10;
+export const HOT_TAPE_MIN_DOLLAR_VOLUME = 50_000_000;
+export const HOT_TAPE_MIN_MARKET_CAP = 2_000_000_000;
+
 const normalizeSymbols = (symbols = []) => [
   ...new Set(
     symbols
@@ -115,6 +126,9 @@ async function loadMarketTape({ watchlist = [], limit = DEFAULT_MARKET_LIMIT, re
     curated: HOT_UNIVERSE.map(({ symbol, name, kind }) => ({ symbol, name, kind })),
     watchlist,
     limit,
+    minPrice: HOT_TAPE_MIN_PRICE,
+    minDollarVolume: HOT_TAPE_MIN_DOLLAR_VOLUME,
+    minMarketCap: HOT_TAPE_MIN_MARKET_CAP,
   });
 
   return { ...tape, screenErrors };

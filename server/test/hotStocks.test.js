@@ -90,6 +90,29 @@ test('a price below the buy band is a broken setup, never buy-now', () => {
   assert.equal(stock.hotScore, 60, 'no timing bonus below the band');
 });
 
+test('a buy in the band with a thin reward:risk at spot waits for a better fill', () => {
+  const thin = buildHotStock({ ...baseSignal, price: 101.4, riskRewardAtSpot: 1.32 });
+
+  assert.equal(thin.buyNow, false, 'a 1.3:1 fill is a chase, not an entry');
+  assert.equal(thin.entryQuality, 'thin');
+  assert.equal(thin.bucket, 'waiting');
+  // (T2 + 1.5 × stop) / 2.5 — where the spot ratio recovers to 1.5:1.
+  assert.equal(thin.waitFor, 100.8);
+  assert.equal(thin.hotScore, 60, 'a thin entry earns no timing bonus');
+  assert.match(thin.why, /1\.3:1 at spot/);
+
+  const clean = buildHotStock({ ...baseSignal, price: 100, riskRewardAtSpot: 2.1 });
+  assert.equal(clean.buyNow, true);
+  assert.equal(clean.entryQuality, 'good');
+  assert.match(clean.why, /2\.1:1 at spot/);
+});
+
+test('a broken primary trend never publishes a buy-now call', () => {
+  const stock = buildHotStock({ ...baseSignal, price: 100, aboveSma200: false });
+  assert.equal(stock.buyNow, false);
+  assert.equal(stock.bucket, 'waiting');
+});
+
 test('a signal above its zone waits for the pullback instead of buying now', () => {
   const stock = buildHotStock({ ...baseSignal, price: 110 });
   assert.equal(stock.buyNow, false);

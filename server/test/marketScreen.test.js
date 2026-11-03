@@ -6,6 +6,7 @@ import {
   MARKET_SCREEN_IDS,
   buildMarketTape,
   heatScore,
+  isReputableInstrument,
   isTradeableQuote,
   selectDeepSymbols,
 } from '../src/analytics/marketScreen.js';
@@ -76,6 +77,26 @@ test('cheap, illiquid, foreign and non-equity quotes never reach the tape', () =
     tape.rows.map((row) => row.symbol),
     ['GOOD'],
   );
+});
+
+test('the reputation gate requires real size and liquidity, not just a US listing', () => {
+  assert.equal(isReputableInstrument(quote('BIG')), true);
+  assert.equal(isReputableInstrument(quote('CHEAP', { price: 4 })), false, 'sub-$5');
+  assert.equal(isReputableInstrument(quote('QUIET', { averageVolume: 400_000 })), false, 'thin average volume');
+  assert.equal(isReputableInstrument(quote('SMALL', { price: 20, averageVolume: 900_000 })), false, '$18M a day');
+  assert.equal(
+    isReputableInstrument(quote('MICRO', { price: 20, averageVolume: 5_000_000, marketCap: 900_000_000 }), {
+      minMarketCap: 2_000_000_000,
+    }),
+    false,
+    'a sub-$2B stock is not a swing vehicle',
+  );
+  assert.equal(
+    isReputableInstrument(quote('SPY', { quoteType: 'ETF', marketCap: null }), { minMarketCap: 2_000_000_000 }),
+    true,
+    'ETFs carry no market cap and are exempt',
+  );
+  assert.equal(isReputableInstrument(quote('UNKNOWN', { averageVolume: null })), false, 'unknown liquidity is not trusted');
 });
 
 test('heat favours unusual volume and a steady move over a parabolic spike', () => {

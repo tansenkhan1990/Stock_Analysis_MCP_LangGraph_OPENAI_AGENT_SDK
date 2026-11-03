@@ -189,7 +189,7 @@ export function HotCard({ stock, go, ai = null, outlook = null, onFavorite, save
         </span>
         <span
           className={`score-chip ${scoreTone(stock.hotScore)}`}
-          title="Hot score starts with 60% quality + 25% conviction, then adds up to 15 points when the price is near the buy band"
+          title="Hot score starts with 60% quality + 25% conviction, then adds up to 15 points when the price is near the buy band and the reward:risk at the live price is at least 1.5:1"
         >
           {stock.hotScore} hot
         </span>
@@ -392,7 +392,7 @@ export function OutlookRow({ pick, go, onFavorite, saved = false, saving = false
 }
 
 const SCOPES = [
-  { id: 'market', label: 'All market' },
+  { id: 'market', label: 'All market · liquid' },
   { id: 'broad', label: 'Curated board' },
   { id: 'focus', label: 'My list' },
 ];
@@ -598,10 +598,13 @@ export default function HotStocksPage({ go, health }) {
           <div className="eyebrow">HOT STOCKS</div>
           <h1>Buy now — and where to sell</h1>
           <p className="page-sub">
-            Every good name with a chance to go up — buy signals ready now, quality uptrends waiting for a pullback, and
-            constructive holds that need a trigger before they earn a buy. The hottest {data?.depth ?? depth} get a full plan:
-            a price range to buy in, three prices to take profit at, and a stop. Every other name still shows its live quote on
-            the market tape below, and each card has a ☆ button to add the name to your focus list.
+            Every reputable name with a chance to go up — buy signals ready now, quality uptrends waiting for a pullback, and
+            constructive holds that need a trigger before they earn a buy. Only liquid US stocks and ETFs clear the quality
+            gate: at least $10, 1M average shares and $50M average dollar volume a day, and a $2B market cap for stocks
+            (ETFs exempt). A BUY NOW also needs at least 1.5:1 reward:risk at the live price. The hottest{' '}
+            {data?.depth ?? depth} get a full plan: a price range to buy in, three prices to take profit at, and a stop. Every
+            other name still shows its live quote on the market tape below, and each card has a ☆ button to add the name to
+            your focus list.
           </p>
         </div>
         <div className="head-actions">
