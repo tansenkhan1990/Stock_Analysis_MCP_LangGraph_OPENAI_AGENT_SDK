@@ -53,8 +53,8 @@ export default function DayTradePage({ symbol, go }) {
       <div className="page day-page">
         <div className="analyzer-loading">
           <div className="loading-orbit" />
-          <h2>Reading the {symbol} intraday chart…</h2>
-          <p className="muted">Fetching 5-minute bars, session VWAP, EMAs and the opening range.</p>
+          <h2>Reading the {symbol} hourly chart…</h2>
+          <p className="muted">Fetching 1-hour bars, session VWAP, EMAs and the first-hour range.</p>
         </div>
       </div>
     );
@@ -67,7 +67,7 @@ export default function DayTradePage({ symbol, go }) {
           <div>
             <div className="eyebrow">DAY TRADING</div>
             <h1>Intraday buy / sell read</h1>
-            <p className="page-sub">Pick a liquid ticker and the engine reads the 5-minute chart: VWAP, EMA9/20, RSI, opening range and volume.</p>
+            <p className="page-sub">Pick a liquid US stock or ETF and the engine reads the 1-hour chart: VWAP, EMA9/20, RSI, ADX, the first-hour range and volume.</p>
           </div>
         </section>
         <div className="analyzer-search-panel panel">
@@ -100,7 +100,7 @@ export default function DayTradePage({ symbol, go }) {
             {data.symbol} <span className="muted">intraday read</span>
           </h1>
           <p className="page-sub">
-            {data.name} · 5-minute bars · session {data.session.date} · updates every 60 seconds. Times are New York (ET).
+            {data.name} · 1-hour bars · session {data.session.date} · updates every 60 seconds. Times are New York (ET).
           </p>
         </div>
         <div className="head-actions">
@@ -179,13 +179,13 @@ export default function DayTradePage({ symbol, go }) {
         <section className="panel day-chart-panel">
           <div className="panel-head">
             <div>
-              <div className="eyebrow">5-MINUTE CHART</div>
+              <div className="eyebrow">1-HOUR CHART</div>
               <h2>Price action & trade levels</h2>
             </div>
             <div className="chip-row">
               <span className="chip">VWAP</span>
               <span className="chip">EMA9 / EMA20</span>
-              <span className="chip">Opening range</span>
+              <span className="chip">First-hour range</span>
             </div>
           </div>
           <IntradayChart
@@ -197,8 +197,8 @@ export default function DayTradePage({ symbol, go }) {
             sessionStarts={data.chart.sessionStarts}
           />
           <div className="chart-foot">
-            <span>5m bars · times New York (ET) · auto-refresh 60s</span>
-            <span className="muted">ORH / ORL = opening-range high / low · PDC = prior close</span>
+            <span>1h bars · last 5 sessions · times New York (ET) · auto-refresh 60s</span>
+            <span className="muted">ORH / ORL = first-hour high / low · PDC = prior close</span>
           </div>
         </section>
 
@@ -252,8 +252,8 @@ export default function DayTradePage({ symbol, go }) {
               <Stat label="VWAP" value={money(levels.vwap)} />
               <Stat label="EMA9" value={money(levels.ema9)} />
               <Stat label="EMA20" value={money(levels.ema20)} />
-              <Stat label="OR high" value={money(levels.openingRangeHigh)} />
-              <Stat label="OR low" value={money(levels.openingRangeLow)} />
+              <Stat label="First-hour high" value={money(levels.openingRangeHigh)} />
+              <Stat label="First-hour low" value={money(levels.openingRangeLow)} />
               <Stat label="Prior close" value={money(levels.priorClose)} />
               <Stat label="Session high" value={money(levels.sessionHigh)} />
               <Stat label="Session low" value={money(levels.sessionLow)} />
@@ -266,6 +266,7 @@ export default function DayTradePage({ symbol, go }) {
               <Stat label="RSI (14)" value={indicators.rsi14 ?? '—'} tone={indicators.rsi14 > 70 ? 'down' : indicators.rsi14 < 30 ? 'up' : ''} />
               <Stat label="ATR %" value={`${indicators.atrPct ?? '—'}%`} />
               <Stat label="Volume ratio" value={indicators.volumeRatio ? `${indicators.volumeRatio}×` : '—'} />
+              <Stat label="ADX (14)" value={indicators.adx14 ?? '—'} hint={indicators.chop ? 'Range-bound tape' : ''} />
               <Stat label="VWAP distance" value={pct(indicators.vwapDistancePct, 2)} />
               <Stat label="Trend" value={indicators.ema9Above20 ? 'Up' : 'Down'} tone={indicators.ema9Above20 ? 'up' : 'down'} />
               <Stat label="vs prior close" value={pct(((data.price - levels.priorClose) / levels.priorClose) * 100, 2)} />
@@ -481,8 +482,8 @@ export default function DayTradePage({ symbol, go }) {
       )}
 
       <div className="dashboard-footnote">
-        Educational intraday read, not investment advice. 5-minute signals are noisy and can flip quickly; use the stop and size
-        positions to your own risk budget.
+        Educational intraday read, not investment advice. 1-hour bars smooth the noise but still lag a fast reversal; use the
+        stop and size positions to your own risk budget.
       </div>
     </div>
   );

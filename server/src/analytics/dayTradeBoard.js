@@ -4,7 +4,7 @@
  * Input is one `buildDayTrade()` read per name plus the tape facts the screener
  * already knows (relative volume). The board answers two questions per row:
  *
- *   - is there a signal on the 5-minute chart right now?  BUY / SELL / WAIT
+ *   - is there a signal on the 1-hour chart right now?  BUY / SELL / WAIT
  *   - is this name worth day-trading today?  tradeability 0–100
  *
  * Tradeability rewards what an intraday trader actually needs: enough movement
@@ -51,20 +51,20 @@ function openingRangePosition({ price, high, low }) {
 
 function setupLabel(action, position) {
   if (action === 'buy') {
-    return position === 'above' ? 'Opening-range breakout long' : 'VWAP reclaim long';
+    return position === 'above' ? 'First-hour breakout long' : 'VWAP reclaim long';
   }
   if (action === 'sell') {
-    return position === 'below' ? 'Opening-range breakdown short' : 'VWAP rejection short';
+    return position === 'below' ? 'First-hour breakdown short' : 'VWAP rejection short';
   }
-  return 'Inside the opening range — wait for the break';
+  return 'Inside the first-hour range — wait for the break';
 }
 
-function buildWhy({ action, position, atrPct, relativeVolume, rsi }) {
+function buildWhy({ action, position, atrPct, relativeVolume, rsi, adx, trendless }) {
   const parts = [];
   if (action === 'buy') {
-    parts.push(position === 'above' ? 'Above VWAP and the opening-range high' : 'Holding above session VWAP');
+    parts.push(position === 'above' ? 'Above VWAP and the first-hour high' : 'Holding above session VWAP');
   } else if (action === 'sell') {
-    parts.push(position === 'below' ? 'Below VWAP and the opening-range low' : 'Rejected at session VWAP');
+    parts.push(position === 'below' ? 'Below VWAP and the first-hour low' : 'Rejected at session VWAP');
   } else {
     parts.push('No confirmed break yet');
   }
@@ -73,6 +73,8 @@ function buildWhy({ action, position, atrPct, relativeVolume, rsi }) {
     parts.push(`${round(relativeVolume, 1)}× vol`);
   }
   if (Number.isFinite(Number(rsi))) parts.push(`RSI ${round(rsi, 0)}`);
+  if (trendless) parts.push('ADX < 18 · range-bound');
+  else if (Number.isFinite(Number(adx))) parts.push(`ADX ${round(adx, 0)}`);
   return parts.join(' · ');
 }
 
@@ -113,6 +115,8 @@ export function buildDayTradeRow(trade = {}) {
       : null;
 
   const atrPct = round(trade.indicators?.atrPct);
+  const adx = round(trade.indicators?.adx14, 1);
+  const trendless = Boolean(trade.indicators?.chop);
   const relativeVolume = Number.isFinite(Number(trade.relativeVolume)) ? Number(trade.relativeVolume) : null;
 
   return {
@@ -122,7 +126,7 @@ export function buildDayTradeRow(trade = {}) {
     price: round(price),
     changePercent: round(trade.changePercent),
     session: trade.session?.date ?? null,
-    interval: trade.interval || '5m',
+    interval: trade.interval || '60m',
     action,
     actionLabel: action === 'buy' ? 'Buy' : action === 'sell' ? 'Sell' : 'Wait',
     bucket: action === 'wait' ? 'wait' : action,
@@ -133,6 +137,8 @@ export function buildDayTradeRow(trade = {}) {
     tradeability: tradeabilityScore({ atrPct, relativeVolume, score: trade.score, price }),
     relativeVolume: round(relativeVolume),
     rsi: round(trade.indicators?.rsi14, 1),
+    adx,
+    trendless,
     atrPct,
     sessionVolumeRatio: round(trade.indicators?.volumeRatio),
     vwapDistancePct: round(trade.indicators?.vwapDistancePct),
@@ -151,6 +157,8 @@ export function buildDayTradeRow(trade = {}) {
       atrPct,
       relativeVolume,
       rsi: trade.indicators?.rsi14,
+      adx,
+      trendless,
     }),
   };
 }

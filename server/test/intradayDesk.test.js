@@ -40,6 +40,7 @@ const engineTrade = (symbol = 'TEST') => {
       changePercent: 1.1,
     },
     history: { bars },
+    interval: '5m',
   });
 };
 
@@ -60,6 +61,7 @@ const flatTrade = () => {
       changePercent: 0.01,
     },
     history: { bars },
+    interval: '5m',
   });
 };
 
@@ -139,6 +141,7 @@ test('trigger levels always sit on the correct side of spot, even after a breakd
       changePercent: -2.4,
     },
     history: { bars },
+    interval: '5m',
   });
 
   const decision = normalizeIntradayDecision(

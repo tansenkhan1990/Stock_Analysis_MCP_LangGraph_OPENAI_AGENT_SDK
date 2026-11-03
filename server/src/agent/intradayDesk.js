@@ -2,21 +2,21 @@ import { parseDecisionJson } from './llmDecision.js';
 import { chatWithLLM } from './providers.js';
 
 /**
- * The intraday desk call: the LLM reads the live 5-minute picture plus the daily
+ * The intraday desk call: the LLM reads the live 1-hour picture plus the daily
  * context (trend, news, event risk, option positioning) and returns a single
  * BUY / SELL / WAIT read with its own entry, stop and targets.
  *
  * Two rules keep the output safe for real orders:
- *  - every price the model returns is validated against spot and the 5-minute
+ *  - every price the model returns is validated against spot and the hourly
  *    ATR; anything absurd falls back to the mechanical plan, and
  *  - the deterministic engine read is always kept alongside the model's call so
  *    the UI can show both when they disagree.
  */
 
-export const INTRADAY_SYSTEM_PROMPT = `You are MarketPilot's intraday trading desk. You make ONE call per dossier for a single US cash session (09:30-16:00 New York) using 5-minute bars. You are decisive, calibrated and you trade the tape that is in front of you.
+export const INTRADAY_SYSTEM_PROMPT = `You are MarketPilot's intraday trading desk. You make ONE call per dossier for a single US cash session (09:30-16:00 New York) using 1-hour bars. You are decisive, calibrated and you trade the tape that is in front of you.
 
 Weigh the evidence in this order:
-1. INTRADAY STRUCTURE (the mechanical read) — session VWAP, EMA9 vs EMA20, RSI(14), the 30-minute opening range, relative volume, prior session high/low/close. This is the backbone of the call.
+1. INTRADAY STRUCTURE (the mechanical read) — session VWAP, EMA9 vs EMA20, RSI(14), ADX(14), the first-hour range, relative volume, prior session high/low/close. This is the backbone of the call.
 2. REGIME — the daily trend (50/200-day), ADX and ATR%. Intraday longs work with the daily trend or after a washed-out pullback; counter-trend longs against a broken daily trend are lower conviction.
 3. NEWS AND CATALYSTS — headline flow and business deals. Short-term flow can be driven by a headline; if the news directly contradicts the mechanical read, say so and lower conviction.
 4. EVENT RISK — earnings today or tomorrow means smaller size and lower conviction, or no trade at all.
@@ -24,6 +24,7 @@ Weigh the evidence in this order:
 
 Rules:
 - Use ONLY the numbers in the dossier. Never invent prices, times or figures.
+- ADX below 18 means a range-bound tape: breakouts fail there, so prefer hold or demand a much stronger setup.
 - Action must be exactly one of: "buy" (long), "sell" (short), "hold" (stand aside — the app shows this as WAIT).
 - A "hold" call is a real answer: intraday edges are small, and the middle of the opening range is not a trade.
 - Conviction 75+ only when intraday structure, daily regime and news all point the same way with volume confirmation. No-trade reads should stay at or below 60.
@@ -68,6 +69,7 @@ export function buildIntradayDossier({ trade, context = null }) {
     symbol: trade.symbol,
     name: trade.name,
     exchange: trade.exchange,
+    interval: trade.interval,
     marketState: trade.marketState,
     sessionDate: trade.session?.date,
     sessionBars: trade.session?.bars,
@@ -91,6 +93,8 @@ export function buildIntradayDossier({ trade, context = null }) {
       priorLow: trade.levels?.priorLow,
       priorClose: trade.levels?.priorClose,
       rsi14: trade.indicators?.rsi14,
+      adx14: trade.indicators?.adx14,
+      choppyTape: trade.indicators?.chop,
       atr14: trade.indicators?.atr14,
       atrPct: trade.indicators?.atrPct,
       volumeRatio: trade.indicators?.volumeRatio,
@@ -259,7 +263,7 @@ export function normalizeIntradayDecision(parsed, fallback = {}, { price, atr = 
       buyAbove: buyTrigger,
       sellBelow: sellTrigger,
       note:
-        'Intraday triggers — wait for a 5-minute candle close, not just a wick, and respect the stop.',
+        'Intraday triggers — wait for a 1-hour candle close, not just a wick, and respect the stop.',
     },
     invalidation: plan?.invalidation ?? fallback?.plan?.invalidation ?? 'Standing aside means the setup never triggered.',
     whatWouldChangeMyMind:

@@ -1,13 +1,19 @@
-import { atr, ema, last, rsi } from './indicators.js';
+import { adx, atr, ema, last, rsi } from './indicators.js';
 import { HttpError } from '../lib/errors.js';
 
 /**
- * Day-trading read on an intraday chart (default 5-minute bars).
+ * Day-trading read on an intraday chart (default 1-hour bars).
  *
- * The model is deliberately simple and explainable, because intraday signals
- * are noisy: session VWAP, EMA9 vs EMA20, RSI(14), the 30-minute opening range
- * and relative volume. It answers: long, short, or no trade — and if there is a
- * trade, the entry, stop and R-multiple targets.
+ * The model is deliberately simple and explainable: session VWAP, EMA9 vs
+ * EMA20, RSI(14), ADX(14) trend strength, the first-hour range and relative
+ * volume. It answers: long, short, or no trade — and if there is a trade, the
+ * entry, stop and R-multiple targets.
+ *
+ * Three filters exist because a bare checklist over-calls:
+ *  - a trendless tape (ADX below 18) damps every directional signal, so a
+ *    range-bound day cannot publish a confident BUY / SELL;
+ *  - structure tests are ATR-scaled, so a few cents around VWAP is not a trend;
+ *  - the first-hour range has to be closed before an entry is published.
  */
 const NY_DATE = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'America/New_York',
@@ -31,6 +37,20 @@ const round = (value, digits = 2) => {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+const BAR_MINUTES = { '1m': 1, '2m': 2, '5m': 5, '15m': 15, '30m': 30, '60m': 60 };
+
+/** The opening range is the first hour of the session, whatever the bar size. */
+const OPENING_RANGE_MINUTES = 60;
+/** Below this ADX the tape is range-bound, not trending. */
+export const CHOP_ADX = 18;
+const MIN_BARS = 30;
+
+export const barMinutesFor = (interval) => BAR_MINUTES[String(interval)] ?? 5;
+
+/** How many bars make up the first-hour range at this bar size (5m → 12, 1h → 1). */
+export const openingRangeBars = (interval) =>
+  clamp(Math.round(OPENING_RANGE_MINUTES / barMinutesFor(interval)), 1, 12);
+
 const sessionKey = (iso) => NY_DATE.format(new Date(iso));
 
 const minutesOfDay = (iso) => {
@@ -43,8 +63,6 @@ const inRegularSession = (iso) => {
   const minutes = minutesOfDay(iso);
   return minutes >= 9 * 60 + 30 && minutes < 16 * 60;
 };
-
-const OPENING_RANGE_BARS = 6; // 6 × 5m = the first 30 minutes
 
 function groupSessions(bars) {
   const groups = [];
@@ -97,14 +115,27 @@ export function scoreSetup({
   openingRangeLow,
   volumeRatio = null,
   priorClose = null,
+  priorHigh = null,
+  priorLow = null,
+  adx: adxValue = null,
+  atr: atrValue = null,
 } = {}) {
   let score = 0;
   const reasons = [];
-  const aboveVwap = price >= vwap;
-  const abovePriorClose = Number.isFinite(priorClose) ? price >= priorClose : null;
 
-  score += aboveVwap ? 2 : -2;
-  reasons.push(aboveVwap ? 'Price is holding above session VWAP' : 'Price is trading below session VWAP');
+  // A fraction of an ATR around VWAP is noise, not a trend. Without an ATR the
+  // raw side of the price still counts, so the rule stays usable on thin data.
+  const atrUnit = Number.isFinite(atrValue) && atrValue > 0 ? atrValue : null;
+  const vwapDistance = price - vwap;
+  const vwapMeaningful = atrUnit ? Math.abs(vwapDistance) >= atrUnit * 0.15 : vwapDistance !== 0;
+  const aboveVwap = vwapDistance >= 0;
+
+  if (vwapMeaningful) {
+    score += aboveVwap ? 2 : -2;
+    reasons.push(aboveVwap ? 'Price is holding above session VWAP' : 'Price is trading below session VWAP');
+  } else {
+    reasons.push('Price is hugging VWAP — neither side controls the session');
+  }
 
   const emaUptrend = ema9 >= ema20;
   score += emaUptrend ? 2 : -2;
@@ -124,49 +155,91 @@ export function scoreSetup({
 
   if (price > openingRangeHigh) {
     score += 2;
-    reasons.push('Price is above the 30-minute opening range');
+    reasons.push('Price is above the first-hour range');
   } else if (price < openingRangeLow) {
     score -= 2;
-    reasons.push('Price is below the 30-minute opening range');
+    reasons.push('Price is below the first-hour range');
   } else {
-    reasons.push('Price is still inside the 30-minute opening range');
+    reasons.push('Price is still inside the first-hour range');
   }
 
   if (volumeRatio !== null && volumeRatio >= 1.25) {
-    reasons.push(`Recent volume is ${volumeRatio}× the session average`);
+    reasons.push(`Recent volume is ${volumeRatio}× the recent average`);
     if (score > 0) score += 1;
     else if (score < 0) score -= 1;
+  } else if (volumeRatio !== null && volumeRatio < 0.8) {
+    // A breakout without participation is the classic false signal: fade it
+    // instead of confirming it.
+    if (score > 0) score -= 1;
+    else if (score < 0) score += 1;
+    reasons.push(`Volume is only ${volumeRatio}× the recent average — thin participation`);
   }
 
+  const abovePriorClose = Number.isFinite(priorClose) ? price >= priorClose : null;
   if (abovePriorClose !== null) {
     score += abovePriorClose ? 1 : -1;
     reasons.push(abovePriorClose ? 'Price is above the previous session close' : 'Price is below the previous session close');
   }
 
-  return { score, reasons };
+  if (Number.isFinite(priorHigh) && price > priorHigh) {
+    score += 1;
+    reasons.push('Price is above the prior session high');
+  } else if (Number.isFinite(priorLow) && price < priorLow) {
+    score -= 1;
+    reasons.push('Price is below the prior session low');
+  }
+
+  const trendless = Number.isFinite(adxValue) && adxValue < CHOP_ADX;
+  if (Number.isFinite(adxValue)) {
+    if (trendless) {
+      // ADX under 18: ranges, not trends. Halve the directional read so a
+      // range-bound tape cannot publish a confident BUY / SELL.
+      score = Math.floor(score * 0.5);
+      reasons.push(`ADX ${round(adxValue, 1)} — trendless, range-bound tape`);
+    } else {
+      reasons.push(`ADX ${round(adxValue, 1)} — ${adxValue >= 25 ? 'established trend' : 'trend building'}`);
+    }
+  }
+
+  return { score, reasons, trendless };
 }
 
 /**
  * Confidence is deliberately asymmetric: a no-trade read stays below 60 so
  * noise is never dressed up as a 70% call, while actionable setups scale with
- * score strength and volume confirmation.
+ * score strength, volume confirmation, trend strength and how many independent
+ * factors agree.
  */
-export function dayTradeConfidence({ action, score, volumeRatio = null } = {}) {
-  if (action === 'wait') return clamp(Math.round(45 + Math.abs(score) * 3), 40, 60);
-  return clamp(Math.round(50 + Math.abs(score) * 5 + (volumeRatio !== null && volumeRatio >= 1.25 ? 4 : 0)), 55, 92);
+export function dayTradeConfidence({
+  action,
+  score,
+  volumeRatio = null,
+  adx: adxValue = null,
+  confirmations = 0,
+} = {}) {
+  const strength = Math.abs(Number(score) || 0);
+  if (action === 'wait') return clamp(Math.round(42 + strength * 2.5), 35, 60);
+  const volumeBonus = Number.isFinite(Number(volumeRatio)) && Number(volumeRatio) >= 1.25 ? 5 : 0;
+  const trendBonus = Number.isFinite(adxValue) ? (adxValue >= 25 ? 6 : adxValue >= CHOP_ADX ? 3 : 0) : 0;
+  const confirmationBonus = clamp(Math.round(Number(confirmations) || 0), 0, 7);
+  return clamp(Math.round(48 + strength * 4 + volumeBonus + trendBonus + confirmationBonus), 50, 90);
 }
 
-export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}) {
+export function buildDayTrade({ quote = {}, history = {}, interval = '60m' } = {}) {
+  const barMinutes = barMinutesFor(interval);
   const bars = (history.bars || []).filter((bar) => Number.isFinite(bar.close) && inRegularSession(bar.date));
-  if (bars.length < 30) {
-    throw new HttpError(422, `Not enough intraday data for ${quote.symbol || 'this symbol'} yet — try again during the session.`);
+  if (bars.length < MIN_BARS) {
+    throw new HttpError(
+      422,
+      `Not enough ${interval} data for ${quote.symbol || 'this symbol'} yet — try again during the session.`,
+    );
   }
 
   const groups = groupSessions(bars);
   const latest = groups[groups.length - 1];
   const prior = groups.length > 1 ? groups[groups.length - 2] : null;
-  if (!latest || latest.bars.length < 3) {
-    throw new HttpError(422, 'The current session has only just opened — give it a few minutes.');
+  if (!latest || latest.bars.length < 2) {
+    throw new HttpError(422, 'The current session has only just opened — wait for a few more bars.');
   }
 
   const closes = bars.map((bar) => bar.close);
@@ -174,6 +247,7 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
   const ema20Series = ema(closes, 20);
   const rsiSeries = rsi(closes, 14);
   const atrSeries = atr(bars, 14);
+  const adxSeries = adx(bars, 14);
   const vwapSeries = buildVwap(bars);
 
   const price = Number(quote.price) || latest.bars[latest.bars.length - 1].close;
@@ -182,11 +256,15 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
   const ema20Value = last(ema20Series) ?? price;
   const rsiValue = last(rsiSeries) ?? 50;
   const atrValue = last(atrSeries) ?? price * 0.01;
+  const adxValue = last(adxSeries.adx);
 
-  const openingBars = latest.bars.slice(0, OPENING_RANGE_BARS);
+  const orBars = openingRangeBars(interval);
+  const openingBars = latest.bars.slice(0, orBars);
   const openingRangeHigh = Math.max(...openingBars.map((bar) => bar.high));
   const openingRangeLow = Math.min(...openingBars.map((bar) => bar.low));
-  const openingRangeComplete = latest.bars.length >= OPENING_RANGE_BARS;
+  // The range is only usable once the first hour has closed and price has
+  // traded after it; during the first hour the range is still forming.
+  const openingRangeComplete = latest.bars.length > orBars;
 
   const sessionHigh = Math.max(...latest.bars.map((bar) => bar.high));
   const sessionLow = Math.min(...latest.bars.map((bar) => bar.low));
@@ -194,13 +272,18 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
   const priorLow = prior ? Math.min(...prior.bars.map((bar) => bar.low)) : null;
   const priorClose = prior ? prior.bars[prior.bars.length - 1].close : quote.previousClose ?? null;
 
-  const recentVolume = average(latest.bars.slice(-3).map((bar) => bar.volume || 0));
-  const sessionVolume = average(latest.bars.map((bar) => bar.volume || 0));
-  const volumeRatio = sessionVolume > 0 ? round(recentVolume / sessionVolume, 2) : null;
+  // Relative volume compares the last two bars with the 20 before them, so an
+  // early-session read is not diluted by a whole prior session's average.
+  const recentBars = latest.bars.slice(-2);
+  const recentVolume = average(recentBars.map((bar) => bar.volume || 0));
+  const baselineEnd = Math.max(bars.length - 2, 0);
+  const baselineBars = bars.slice(Math.max(0, baselineEnd - 20), baselineEnd);
+  const baselineVolume = average(baselineBars.map((bar) => bar.volume || 0));
+  const volumeRatio = baselineVolume > 0 ? round(recentVolume / baselineVolume, 2) : null;
 
   const aboveVwap = price >= vwap;
   const emaUptrend = ema9Value >= ema20Value;
-  const { score, reasons } = scoreSetup({
+  const { score, reasons, trendless } = scoreSetup({
     price,
     vwap,
     ema9: ema9Value,
@@ -210,23 +293,49 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
     openingRangeLow,
     volumeRatio,
     priorClose,
+    priorHigh,
+    priorLow,
+    adx: adxValue,
+    atr: atrValue,
   });
 
+  // A range-bound tape needs more agreement before it is allowed to trade.
+  const threshold = trendless ? 5 : 4;
   let action = 'wait';
-  if (score >= 4) action = 'buy';
-  else if (score <= -4) action = 'sell';
+  if (score >= threshold) action = 'buy';
+  else if (score <= -threshold) action = 'sell';
 
-  const confidence = dayTradeConfidence({ action, score, volumeRatio });
+  if (!openingRangeComplete && action !== 'wait') {
+    action = 'wait';
+    reasons.push('The first-hour range is still forming — no entries until it closes');
+  }
+
+  const direction = action === 'buy' ? 1 : action === 'sell' ? -1 : 0;
+  const volumeConfirmed = Number.isFinite(Number(volumeRatio)) && Number(volumeRatio) >= 1.25;
+  const confirmations =
+    direction === 0
+      ? 0
+      : [
+          direction > 0 ? aboveVwap : !aboveVwap,
+          direction > 0 ? emaUptrend : !emaUptrend,
+          direction > 0 ? rsiValue >= 55 : rsiValue <= 45,
+          direction > 0 ? price > openingRangeHigh : price < openingRangeLow,
+          volumeConfirmed,
+          Number.isFinite(priorClose) ? (direction > 0 ? price >= priorClose : price < priorClose) : false,
+          Number.isFinite(adxValue) && adxValue >= CHOP_ADX,
+        ].filter(Boolean).length;
+
+  const confidence = dayTradeConfidence({ action, score, volumeRatio, adx: adxValue, confirmations });
 
   // ---------- Trade plan ----------
   const atrFloor = Math.max(atrValue * 0.8, price * 0.0025);
   let plan = null;
 
   if (action !== 'wait') {
-    const direction = action === 'buy' ? 'long' : 'short';
-    let stopLoss = direction === 'long' ? price - atrFloor : price + atrFloor;
+    const planDirection = action === 'buy' ? 'long' : 'short';
+    let stopLoss = planDirection === 'long' ? price - atrFloor : price + atrFloor;
 
-    if (direction === 'long') {
+    if (planDirection === 'long') {
       if (vwap < price) stopLoss = Math.min(stopLoss, vwap - atrValue * 0.15);
       if (openingRangeLow < price && price - openingRangeLow < atrValue * 1.6) {
         stopLoss = Math.min(stopLoss, openingRangeLow - atrValue * 0.1);
@@ -245,11 +354,12 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
     // names, publishing a "0R" plan whose targets all equal the entry. Keep at
     // least one cent (or 0.1% on larger prices) of distance.
     const minRisk = Math.max(price * 0.001, 0.01);
-    stopLoss = direction === 'long' ? Math.min(stopLoss, price - minRisk) : Math.max(stopLoss, price + minRisk);
+    stopLoss =
+      planDirection === 'long' ? Math.min(stopLoss, price - minRisk) : Math.max(stopLoss, price + minRisk);
     stopLoss = round(stopLoss);
     const riskPerShare = round(Math.abs(price - stopLoss));
     const targets = [1.5, 2.5, 4].map((multiple, index) => {
-      const target = direction === 'long' ? price + riskPerShare * multiple : price - riskPerShare * multiple;
+      const target = planDirection === 'long' ? price + riskPerShare * multiple : price - riskPerShare * multiple;
       return {
         label: `T${index + 1}`,
         price: round(target),
@@ -259,34 +369,42 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
     });
 
     plan = {
-      direction,
+      direction: planDirection,
       entry: round(price),
       stopLoss,
       riskPerShare,
       targets,
       riskReward: 2.5,
       invalidation:
-        direction === 'long'
-          ? 'A close back below VWAP or the stop ends the long read.'
-          : 'A close back above VWAP or the stop ends the short read.',
+        planDirection === 'long'
+          ? 'An hourly close back below VWAP or the stop ends the long read.'
+          : 'An hourly close back above VWAP or the stop ends the short read.',
     };
   }
 
   const triggers = {
     buyAbove: round(openingRangeHigh),
     sellBelow: round(openingRangeLow),
-    note: 'Opening-range breakout levels; wait for a candle close, not just a wick.',
+    note: 'First-hour range breakout levels — wait for an hourly candle to close beyond the level, not just a wick.',
   };
 
-  // ---------- Chart payload: last two sessions, aligned overlays ----------
-  const chartGroups = groups.slice(-2);
+  // ---------- Chart payload: recent sessions, aligned overlays ----------
+  const chartSessionCount = barMinutes >= 60 ? 5 : 2;
+  const chartGroups = groups.slice(-chartSessionCount);
   const chartBarCount = chartGroups.reduce((sum, group) => sum + group.bars.length, 0);
   const offset = bars.length - chartBarCount;
   const sessionStarts = [0];
   if (chartGroups.length === 2) sessionStarts.push(chartGroups[0].bars.length);
+  if (chartGroups.length > 2) {
+    let running = 0;
+    for (let index = 0; index < chartGroups.length - 1; index += 1) {
+      running += chartGroups[index].bars.length;
+      sessionStarts.push(running);
+    }
+  }
 
   const risks = [
-    'Intraday signals are noisy; the stop is part of the trade, not optional.',
+    'Hourly bars smooth the noise but still lag a fast reversal; the stop is part of the trade, not optional.',
     'News, halts or a gap can invalidate the read between candles.',
     'This model reads price and volume only — it does not know your position or risk budget.',
   ];
@@ -305,6 +423,8 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
     session: {
       date: latest.date,
       bars: latest.bars.length,
+      barMinutes,
+      openingRangeMinutes: orBars * barMinutes,
       open: round(latest.bars[0].open),
       high: round(sessionHigh),
       low: round(sessionLow),
@@ -326,6 +446,8 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
     },
     indicators: {
       rsi14: round(rsiValue, 1),
+      adx14: round(adxValue, 1),
+      chop: trendless,
       atr14: round(atrValue),
       atrPct: round((atrValue / price) * 100, 2),
       volumeRatio,
@@ -337,6 +459,7 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '5m' } = {}
     actionLabel: action === 'buy' ? 'Buy' : action === 'sell' ? 'Sell' : 'Wait',
     score,
     confidence,
+    confirmations,
     reasons,
     risks,
     plan,

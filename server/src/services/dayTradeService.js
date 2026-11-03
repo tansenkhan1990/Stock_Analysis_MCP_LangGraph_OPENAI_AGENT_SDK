@@ -14,11 +14,12 @@ import { cache } from '../lib/cache.js';
 import { HttpError } from '../lib/errors.js';
 import { getNewsDigest } from '../lib/newsFeed.js';
 import { seedWatchlist } from '../lib/store.js';
-import { getHistory, getQuote, getQuotes, getScreener } from '../lib/yahoo.js';
+import { getHistory, getQuote, getQuotes } from '../lib/yahoo.js';
 import { getAnalysis } from './analysisService.js';
 
-export const DAY_TRADE_INTERVAL = '5m';
-const HISTORY_RANGE = '5d';
+export const DAY_TRADE_INTERVAL = '60m';
+/** 1-hour bars need a month of history for RSI(14), ADX(14) and five chart sessions. */
+const HISTORY_RANGE = '1mo';
 const US_VENUE_RE = /nasdaq|nyse|amex|arca|bats|cboe/i;
 /** The desk call is deliberately slower-moving than the 60-second bar cache. */
 const DECISION_TTL = 10 * 60_000;
@@ -34,10 +35,60 @@ export const isUsVenue = (exchange) => US_VENUE_RE.test(String(exchange || ''));
 //
 // The single-symbol page answers "what is the intraday read on this ticker?".
 // The board answers "which tickers are worth trading today, and which way?" —
-// so it scans the live tape, runs the same 5-minute engine on the most active
-// names, and ranks the reads. Each name costs one intraday history call, so the
-// depth is deliberately small: this is a shortlist, not a market scan.
+// over a curated universe of liquid US large caps and ETFs, never the raw
+// "most active" screener tape (which is full of sub-$5 micro caps and
+// leveraged products nobody should day-trade). Each name costs one hourly
+// history call, so the depth is deliberately small: a shortlist, not a scan.
 export const DAY_BOARD_SCOPES = ['market', 'focus'];
+
+// ---------- Quality gate ----------
+//
+// A day-trade needs a tight spread and real volume. These thresholds are what
+// separates "reputable" from "moves 40% on 200k shares", and they apply to
+// every scope — including explicit symbols — so junk can never reach the board.
+export const DAY_TRADE_MIN_PRICE = 5;
+export const DAY_TRADE_MIN_AVERAGE_VOLUME = 1_000_000;
+export const DAY_TRADE_MIN_DOLLAR_VOLUME = 20_000_000;
+
+/** Stocks and ETFs only — the board never reads an index, a fund of funds or a crypto pair. */
+export const DAY_TRADE_UNIVERSE = HOT_UNIVERSE.filter(
+  (item) => item.kind === 'stock' || item.kind === 'etf',
+);
+
+const clamp01 = (value) => Math.min(1, Math.max(0, value));
+
+export const isReputableInstrument = (quote = {}) => {
+  const price = Number(quote.price);
+  if (!quote.symbol || !Number.isFinite(price) || price < DAY_TRADE_MIN_PRICE) return false;
+  if (!['EQUITY', 'ETF'].includes(String(quote.quoteType || 'EQUITY').toUpperCase())) return false;
+  // Structured/leveraged tickers and foreign suffixes are not cash US shares.
+  if (/[.=^]/.test(String(quote.symbol))) return false;
+  if (!isUsVenue(quote.exchange)) return false;
+  const averageVolume = Number(quote.averageVolume);
+  if (!Number.isFinite(averageVolume) || averageVolume < DAY_TRADE_MIN_AVERAGE_VOLUME) return false;
+  return price * averageVolume >= DAY_TRADE_MIN_DOLLAR_VOLUME;
+};
+
+export const relativeVolumeOf = (quote = {}) => {
+  const averageVolume = Number(quote.averageVolume);
+  const volume = Number(quote.volume);
+  return averageVolume > 0 && volume > 0 ? Number((volume / averageVolume).toFixed(2)) : null;
+};
+
+/**
+ * Cheap liquidity + activity score used to decide which curated names get the
+ * (expensive) hourly read. Size first: a $10B/day name carries a tighter spread
+ * than a $30M/day one, whatever its move.
+ */
+export function boardCandidateScore({ price, averageVolume, volume, changePercent } = {}) {
+  const dollarVolume = Math.max((Number(price) || 0) * (Number(averageVolume) || 0), 1);
+  // $10M/day ≈ 0, $1B ≈ 0.67, $10B+ = 1 — a thin mover cannot outrank a mega cap.
+  const liquidity = clamp01((Math.log10(dollarVolume) - 7) / 3);
+  const relative = relativeVolumeOf({ averageVolume, volume });
+  const activity = clamp01((Math.min(relative ?? 1, 3) - 0.5) / 2.5);
+  const move = clamp01(Math.abs(Number(changePercent) || 0) / 5);
+  return Number((liquidity * 55 + activity * 25 + move * 20).toFixed(2));
+}
 export const DAY_BOARD_DEPTHS = [8, 12, 20];
 export const DEFAULT_DAY_BOARD_DEPTH = 12;
 export const MAX_DAY_BOARD_DEPTH = 20;
@@ -52,11 +103,12 @@ const normalizeSymbols = (symbols = []) => [
 ];
 
 /**
- * Which names the board reads. The market scope takes the hottest rows of the
- * Yahoo screener tape (heat already blends relative volume and a steady move);
- * focus takes the user's list; explicit symbols win over both.
+ * Which names the board reads. The market scope is the curated universe of
+ * liquid US stocks and ETFs, ranked by liquidity and today's activity; focus
+ * takes the user's own list; explicit symbols win over both. All three scopes
+ * still have to pass the quality gate below.
  */
-async function loadDayBoardUniverse({ scope = 'market', symbols = [], depth = DEFAULT_DAY_BOARD_DEPTH, refresh = false } = {}) {
+async function loadDayBoardUniverse({ scope = 'market', symbols = [], depth = DEFAULT_DAY_BOARD_DEPTH } = {}) {
   const cap = Math.min(Math.max(Number(depth) || DEFAULT_DAY_BOARD_DEPTH, 1), MAX_DAY_BOARD_DEPTH);
   const explicit = normalizeSymbols(symbols);
   if (explicit.length) {
@@ -69,38 +121,20 @@ async function loadDayBoardUniverse({ scope = 'market', symbols = [], depth = DE
     return { symbols: list, scope: 'focus', universeSize: list.length, relativeVolume: new Map() };
   }
 
-  if (refresh) cache.clear('screener:');
-  const settled = await Promise.allSettled(
-    MARKET_SCREENS.map((screen) => getScreener(screen.id, { count: screen.count })),
-  );
-  const screens = settled.map((result, index) =>
-    result.status === 'fulfilled' ? result.value : { id: MARKET_SCREENS[index].id, quotes: [] },
-  );
-  const screenErrors = settled
-    .map((result, index) =>
-      result.status === 'rejected' ? `${MARKET_SCREENS[index].id}: ${result.reason?.message}` : null,
-    )
-    .filter(Boolean);
-
-  const tape = buildMarketTape({
-    screens,
-    curated: HOT_UNIVERSE.map(({ symbol, name, kind }) => ({ symbol, name, kind })),
-    limit: 600,
-  });
-
-  // Day trading needs a live quote on a US venue; rank by heat (volume + move),
-  // not by the tape's curated-first ordering.
-  const picked = tape.rows
-    .filter((row) => Number(row.price) > 0 && isUsVenue(row.exchange))
-    .sort((a, b) => b.heat - a.heat)
-    .slice(0, cap);
+  const curatedSymbols = DAY_TRADE_UNIVERSE.map((item) => item.symbol);
+  const quotes = await getQuotes(curatedSymbols).catch(() => []);
+  const picked = quotes
+    .filter((quote) => isReputableInstrument(quote))
+    .map((quote) => ({ quote, score: boardCandidateScore(quote) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, cap)
+    .map((row) => row.quote);
 
   return {
-    symbols: picked.map((row) => row.symbol),
+    symbols: picked.map((quote) => quote.symbol),
     scope: 'market',
-    universeSize: tape.universeSize,
-    relativeVolume: new Map(picked.map((row) => [row.symbol, row.relativeVolume])),
-    screenErrors,
+    universeSize: curatedSymbols.length,
+    relativeVolume: new Map(picked.map((quote) => [quote.symbol, relativeVolumeOf(quote)])),
   };
 }
 
@@ -112,7 +146,7 @@ async function loadDayBoardUniverse({ scope = 'market', symbols = [], depth = DE
 async function buildDayBoard({ scope, symbols, depth, refresh }) {
   const universe = await loadDayBoardUniverse({ scope, symbols, depth, refresh });
   const generatedAt = new Date().toISOString();
-  const errors = [...(universe.screenErrors || [])];
+  const errors = [];
 
   if (!universe.symbols.length) {
     return {
@@ -133,8 +167,8 @@ async function buildDayBoard({ scope, symbols, depth, refresh }) {
       errors,
       note:
         universe.scope === 'focus'
-          ? 'Your focus list has no US-listed names yet — add a ticker, or switch to the market scan.'
-          : 'The market screen returned no tradable US names — try the focus-list scope or a specific ticker.',
+          ? 'Your focus list has no liquid US stocks or ETFs yet — add a ticker, or switch to the curated scan.'
+          : 'No name in the curated universe passed the quality filter — try the focus-list scope or a specific ticker.',
     };
   }
 
@@ -146,9 +180,15 @@ async function buildDayBoard({ scope, symbols, depth, refresh }) {
       const quote = quoteMap.get(symbol);
       if (!quote) throw new HttpError(404, `${symbol}: no live quote`);
       if (!isUsVenue(quote.exchange)) throw new HttpError(422, `${symbol}: not a US-listed venue`);
+      if (!isReputableInstrument(quote)) {
+        throw new HttpError(
+          422,
+          `${symbol}: filtered — the board only reads US stocks and ETFs above $${DAY_TRADE_MIN_PRICE} with at least ${DAY_TRADE_MIN_AVERAGE_VOLUME / 1_000_000}M average shares a day`,
+        );
+      }
       const history = await getHistory(symbol, { range: HISTORY_RANGE, interval: DAY_TRADE_INTERVAL });
       const trade = buildDayTrade({ quote, history, interval: DAY_TRADE_INTERVAL });
-      return { ...trade, relativeVolume: universe.relativeVolume.get(symbol) ?? null };
+      return { ...trade, relativeVolume: universe.relativeVolume.get(symbol) ?? relativeVolumeOf(quote) };
     }),
   );
 
@@ -164,6 +204,7 @@ async function buildDayBoard({ scope, symbols, depth, refresh }) {
     generatedAt,
     scope: universe.scope,
     depth: trades.length,
+    scanned: trades.length,
     requested: universe.symbols.length,
     universeSize: universe.universeSize ?? universe.symbols.length,
     interval: DAY_TRADE_INTERVAL,
@@ -172,13 +213,13 @@ async function buildDayBoard({ scope, symbols, depth, refresh }) {
     errors: errors.slice(0, 6),
     note: trades.length
       ? null
-      : `No session to read yet${marketState ? ` (market ${marketState.toLowerCase()})` : ''} — the board fills during the 09:30–16:00 New York session.`,
+      : `No session to read yet${marketState ? ` (market ${marketState.toLowerCase()})` : ''} — the board fills during the 09:30–16:00 New York session, once the first hour has closed.`,
   };
 }
 
 /**
  * Ranked intraday board: BUY / SELL / WAIT per name plus the trade plan and a
- * tradeability score. Cached for a minute, like the 5-minute bars behind it.
+ * tradeability score. Cached for a minute, like the hourly bars behind it.
  */
 export async function getDayTradeBoard({
   symbols = [],
@@ -192,7 +233,9 @@ export async function getDayTradeBoard({
 
   if (refresh) {
     cache.clear('dayboard:');
-    cache.clear('screener:');
+    // quote: / quoteBatch: are the live tape behind the universe ranking.
+    cache.clear('quote:');
+    cache.clear('quoteBatch:');
   }
 
   return cache.wrap(key, BOARD_TTL, () =>
@@ -201,7 +244,7 @@ export async function getDayTradeBoard({
 }
 
 /**
- * Everything outside the 5-minute chart that a day trader should see: the daily
+ * Everything outside the hourly chart that a day trader should see: the daily
  * regime, fundamentals, event risk, headline flow and option positioning. Only
  * fetched when a desk call actually has to be computed.
  */
@@ -281,7 +324,7 @@ async function buildIntradayContext(symbol, trade) {
 }
 
 /**
- * Intraday read for one symbol. The 5-minute signal is cached for ~a minute so a
+ * Intraday read for one symbol. The hourly signal is cached for ~a minute so a
  * polling page does not hammer Yahoo; `refresh=1` clears both the signal and its
  * bar cache. When a provider is configured the LLM desk call runs on top of the
  * mechanical read and decides the headline BUY / SELL / WAIT.

@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { money, pct, scoreTone, timeAgo, toneForChange } from '../lib/format.js';
 
 const SCOPES = [
-  { id: 'market', label: 'Live market' },
+  { id: 'market', label: 'Curated large caps + ETFs' },
   { id: 'focus', label: 'Focus list' },
 ];
 
@@ -13,8 +13,9 @@ const DEPTHS = [8, 12, 20];
 const signed = (value) => (Number(value) > 0 ? `+${value}` : `${value ?? 0}`);
 
 /**
- * Best day-trading stocks: the live tape ranked by intraday tradeability, with
- * the 5-minute engine's BUY / SELL / WAIT call and its trade plan per name.
+ * Best day-trading stocks: a curated universe of liquid US large caps and ETFs
+ * ranked by intraday tradeability, with the 1-hour engine's BUY / SELL / WAIT
+ * call and its trade plan per name.
  * Clicking a row opens that ticker's full intraday read.
  */
 export default function DayTradeBoardPage({ go }) {
@@ -70,8 +71,9 @@ export default function DayTradeBoardPage({ go }) {
             Best day-trade <span className="muted">setups</span>
           </h1>
           <p className="page-sub">
-            The live US tape ranked by what is actually tradable today — movement (ATR), relative volume and the strength
-            of the 5-minute signal. Each row carries the engine&apos;s BUY / SELL / WAIT call and its trade plan.
+            Curated liquid US stocks and ETFs only — no penny stocks or leveraged products. Each name is ranked by what is
+            actually tradable today: movement (ATR), relative volume and the strength of the 1-hour read, together with
+            the engine&apos;s BUY / SELL / WAIT call and its trade plan.
           </p>
         </div>
         <div className="head-actions">
@@ -113,7 +115,7 @@ export default function DayTradeBoardPage({ go }) {
             {session && <span>Session {session}</span>}
             <span>
               {data.scanned}/{data.requested} read
-              {data.universeSize ? ` · ${data.universeSize} screened` : ''}
+              {data.universeSize ? ` · ${data.universeSize} in the quality universe` : ''}
             </span>
             <span>Updated {timeAgo(data.generatedAt)}</span>
           </div>
@@ -150,8 +152,8 @@ export default function DayTradeBoardPage({ go }) {
       {loading && (
         <div className="analyzer-loading">
           <div className="loading-orbit" />
-          <h2>Scanning the tape for the best intraday setups…</h2>
-          <p className="muted">Reading 5-minute bars, session VWAP, the opening range and relative volume.</p>
+          <h2>Scanning the quality universe for the best intraday setups…</h2>
+          <p className="muted">Reading 1-hour bars, session VWAP, the first-hour range, ADX and relative volume.</p>
         </div>
       )}
 
@@ -249,7 +251,7 @@ export default function DayTradeBoardPage({ go }) {
 
           <p className="day-board-note muted small">
             Tradeability is a ranking aid, not a probability: it rewards names that move, trade volume and have a decisive
-            5-minute read. A high score on a WAIT row still means no trade — use the breakout levels. Times are New York
+            1-hour read. A high score on a WAIT row still means no trade — use the breakout levels. Times are New York
             (ET); the board refreshes every 60 seconds.
           </p>
         </section>
@@ -261,7 +263,7 @@ export default function DayTradeBoardPage({ go }) {
           <h2>No intraday setups right now</h2>
           <p className="muted">
             {data.note ||
-              'The screen returned no readable session. The board needs an open US session with at least a few 5-minute bars per name.'}
+              'The board needs an open US session and the first hour closed before it reads a name.'}
           </p>
           <div className="hot-empty-actions">
             <button type="button" className="btn btn-ghost" onClick={() => load({ refresh: true })}>
@@ -281,7 +283,7 @@ export default function DayTradeBoardPage({ go }) {
       )}
 
       <div className="dashboard-footnote">
-        Educational intraday ranking, not investment advice. A BUY or SELL call describes the current 5-minute signal;
+        Educational intraday ranking, not investment advice. A BUY or SELL call describes the current 1-hour signal;
         intraday prices can reverse through the stop and the levels are not forecasts.
       </div>
     </div>

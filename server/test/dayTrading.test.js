@@ -1,23 +1,52 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildDayTrade, dayTradeConfidence, scoreSetup } from '../src/analytics/dayTrading.js';
-import { isUsVenue } from '../src/services/dayTradeService.js';
+import {
+  DAY_TRADE_UNIVERSE,
+  boardCandidateScore,
+  isReputableInstrument,
+  isUsVenue,
+} from '../src/services/dayTradeService.js';
 
-const BARS_PER_SESSION = 78; // 09:30–15:55 New York in 5-minute bars
+const BARS_PER_SESSION = 7; // 09:30–15:30 New York in 1-hour bars
+const SESSION_DATES = ['2026-10-08', '2026-10-09', '2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15'];
 
-function makeSession(date, startPrice, step, { bars = BARS_PER_SESSION, volume = 100_000, startOffsetMinutes = 0 } = {}) {
+function makeSession(date, startPrice, step, { bars = BARS_PER_SESSION, volume = 100_000, startOffsetMinutes = 0, wick = 0.02 } = {}) {
   const start = new Date(`${date}T13:30:00.000Z`).getTime() + startOffsetMinutes * 60_000; // 09:30 New York (EDT)
   return Array.from({ length: bars }, (_, index) => {
     const close = startPrice + step * index;
     const open = startPrice + step * (index - 0.3);
     return {
-      date: new Date(start + index * 5 * 60_000).toISOString(),
+      date: new Date(start + index * 60 * 60_000).toISOString(),
       open,
-      high: Math.max(open, close) + Math.abs(step) * 0.8 + 0.02,
-      low: Math.min(open, close) - Math.abs(step) * 0.8 - 0.02,
+      high: Math.max(open, close) + Math.abs(step) * 0.8 + wick,
+      low: Math.min(open, close) - Math.abs(step) * 0.8 - wick,
       close,
       volume,
     };
+  });
+}
+
+const makeSessions = (dates, startPrice, step, options = {}) =>
+  dates.flatMap((date, index) => makeSession(date, startPrice + index * step * BARS_PER_SESSION, step, options));
+
+/** Alternating bars: directional movement flips every hour, so ADX stays low. */
+function makeChopSessions(dates, base, amplitude) {
+  return dates.flatMap((date) => {
+    const start = new Date(`${date}T13:30:00.000Z`).getTime();
+    return Array.from({ length: BARS_PER_SESSION }, (_, index) => {
+      const up = index % 2 === 0;
+      const close = base + (up ? amplitude : -amplitude);
+      const open = base + (up ? -amplitude : amplitude);
+      return {
+        date: new Date(start + index * 60 * 60_000).toISOString(),
+        open,
+        high: Math.max(open, close) + amplitude * 0.5,
+        low: Math.min(open, close) - amplitude * 0.5,
+        close,
+        volume: 100_000,
+      };
+    });
   });
 }
 
@@ -33,9 +62,10 @@ const quoteFor = (bars, symbol = 'TEST') => ({
 });
 
 test('an uptrend above VWAP produces a long plan with R-multiple targets', () => {
-  const bars = [...makeSession('2026-10-15', 100, 0.05), ...makeSession('2026-10-16', 103.9, 0.06)];
+  const bars = makeSessions(SESSION_DATES, 100, 0.05);
   const result = buildDayTrade({ quote: quoteFor(bars), history: { bars } });
 
+  assert.equal(result.interval, '60m');
   assert.equal(result.action, 'buy');
   assert.equal(result.plan.direction, 'long');
   assert.ok(result.plan.entry > 0);
@@ -54,13 +84,16 @@ test('an uptrend above VWAP produces a long plan with R-multiple targets', () =>
   assert.ok(result.confidence >= 60);
   assert.ok(result.reasons.length >= 5);
   assert.ok(result.levels.vwap > 100);
+  assert.equal(result.session.barMinutes, 60);
   assert.equal(result.session.openingRangeComplete, true);
-  assert.equal(result.chart.sessionStarts.length, 2);
+  // Five hourly sessions of context, so the chart is not a 14-candle stub.
+  assert.equal(result.chart.sessionStarts.length, 5);
+  assert.equal(result.chart.sessionStarts[0], 0);
   assert.ok(result.chart.bars.length <= bars.length);
 });
 
 test('a downtrend below VWAP produces a short plan with downside targets', () => {
-  const bars = [...makeSession('2026-10-15', 120, -0.05), ...makeSession('2026-10-16', 116, -0.06)];
+  const bars = makeSessions(SESSION_DATES, 120, -0.05);
   const result = buildDayTrade({ quote: quoteFor(bars), history: { bars } });
 
   assert.equal(result.action, 'sell');
@@ -74,12 +107,9 @@ test('a downtrend below VWAP produces a short plan with downside targets', () =>
 });
 
 test('a low-priced name still gets a non-zero risk plan', () => {
-  // At ~$0.85, rounding the stop to cents used to land it on the entry price
+  // At ~$0.80, rounding the stop to cents used to land it on the entry price
   // and publish a plan with 0 risk and three identical targets.
-  const bars = [
-    ...makeSession('2026-10-15', 0.78, 0.0004),
-    ...makeSession('2026-10-16', 0.81, 0.0005),
-  ];
+  const bars = makeSessions(SESSION_DATES, 0.78, 0.001, { wick: 0.0005 });
   const result = buildDayTrade({ quote: quoteFor(bars), history: { bars } });
 
   assert.ok(result.plan, 'expected an actionable plan');
@@ -130,6 +160,33 @@ test('scoreSetup separates long, short and no-trade conditions', () => {
   assert.ok(Math.abs(neutral.score) < 4, `expected no trade, got ${neutral.score}`);
 });
 
+test('a range-bound tape is damped and cannot publish a forecast', () => {
+  const base = {
+    price: 108,
+    vwap: 106,
+    ema9: 107.2,
+    ema20: 106.5,
+    rsi: 62,
+    openingRangeHigh: 104,
+    openingRangeLow: 103,
+    volumeRatio: 1.6,
+    priorClose: 103,
+  };
+  const trending = scoreSetup({ ...base, adx: 30 });
+  const chopping = scoreSetup({ ...base, adx: 11 });
+
+  assert.equal(trending.trendless, false);
+  assert.equal(chopping.trendless, true);
+  assert.ok(chopping.score < trending.score, 'chop must score below a real trend');
+  assert.ok(chopping.score < 5, `a chop read must stay below the entry threshold, got ${chopping.score}`);
+
+  const bars = makeChopSessions(SESSION_DATES, 100, 0.4);
+  const result = buildDayTrade({ quote: quoteFor(bars), history: { bars } });
+  assert.equal(result.indicators.chop, true, 'alternating bars are a trendless tape');
+  assert.equal(result.action, 'wait');
+  assert.equal(result.plan, null);
+});
+
 test('overbought RSI is penalised rather than chased', () => {
   const base = {
     price: 108,
@@ -146,18 +203,34 @@ test('overbought RSI is penalised rather than chased', () => {
   assert.ok(overbought.score < healthy.score);
 });
 
-test('VWAP and the opening range come from the latest session only', () => {
-  const prior = makeSession('2026-10-15', 50, 0.01);
-  const firstSix = Array.from({ length: 6 }, (_, index) => ({
-    date: new Date(new Date('2026-10-16T13:30:00.000Z').getTime() + index * 5 * 60_000).toISOString(),
+test('thin volume fades a breakout instead of confirming it', () => {
+  const base = {
+    price: 108,
+    vwap: 106,
+    ema9: 107.2,
+    ema20: 106.5,
+    rsi: 62,
+    openingRangeHigh: 104,
+    openingRangeLow: 103,
+    priorClose: 103,
+  };
+  const confirmed = scoreSetup({ ...base, volumeRatio: 1.8 });
+  const thin = scoreSetup({ ...base, volumeRatio: 0.5 });
+  assert.ok(thin.score < confirmed.score);
+});
+
+test('VWAP and the first-hour range come from the latest session only', () => {
+  const prior = makeSessions(['2026-10-08', '2026-10-09', '2026-10-12', '2026-10-13'], 50, 0.01);
+  const firstHour = {
+    date: '2026-10-14T13:30:00.000Z',
     open: 100,
     high: 102,
     low: 99,
     close: 100.5,
     volume: 100_000,
-  }));
-  const rest = makeSession('2026-10-16', 110, 0.01, { bars: 72, startOffsetMinutes: 30 });
-  const bars = [...prior, ...firstSix, ...rest];
+  };
+  const rest = makeSession('2026-10-14', 110, 0.01, { bars: 6, startOffsetMinutes: 60 });
+  const bars = [...prior, firstHour, ...rest];
   const result = buildDayTrade({ quote: quoteFor(bars), history: { bars } });
 
   assert.ok(result.levels.vwap > 100, 'VWAP must reset at the new session, not average the prior day');
@@ -166,9 +239,9 @@ test('VWAP and the opening range come from the latest session only', () => {
 });
 
 test('pre-market bars are ignored', () => {
-  const bars = [...makeSession('2026-10-15', 100, 0.02), ...makeSession('2026-10-16', 101, 0.02)];
+  const bars = makeSessions(SESSION_DATES, 100, 0.02);
   bars.push({
-    date: '2026-10-16T12:00:00.000Z', // 08:00 New York
+    date: '2026-10-15T12:00:00.000Z', // 08:00 New York
     open: 500,
     high: 999,
     low: 1,
@@ -185,6 +258,8 @@ test('confidence stays low for no-trade reads and high for confirmed setups', ()
   assert.ok(dayTradeConfidence({ action: 'wait', score: 3 }) <= 60);
   assert.ok(dayTradeConfidence({ action: 'buy', score: 7, volumeRatio: 1.6 }) >= 80);
   assert.ok(dayTradeConfidence({ action: 'sell', score: -7 }) >= 75);
+  // An established trend with every factor aligned is the only 90% read.
+  assert.ok(dayTradeConfidence({ action: 'buy', score: 10, volumeRatio: 2, adx: 30, confirmations: 7 }) <= 90);
 });
 
 test('only US venues are eligible for the US-session intraday model', () => {
@@ -194,6 +269,33 @@ test('only US venues are eligible for the US-session intraday model', () => {
   assert.equal(isUsVenue('LSE'), false);
   assert.equal(isUsVenue('XETRA'), false);
   assert.equal(isUsVenue(null), false);
+});
+
+test('the board universe is curated stocks and ETFs, not screener junk', () => {
+  assert.ok(DAY_TRADE_UNIVERSE.length >= 30, 'the curated universe should be a real shortlist');
+  assert.ok(DAY_TRADE_UNIVERSE.every((item) => item.kind === 'stock' || item.kind === 'etf'));
+  assert.ok(DAY_TRADE_UNIVERSE.some((item) => item.symbol === 'SPY' && item.kind === 'etf'));
+  assert.ok(DAY_TRADE_UNIVERSE.some((item) => item.symbol === 'NVDA' && item.kind === 'stock'));
+});
+
+test('the quality gate rejects penny stocks, thin names and non-US listings', () => {
+  const good = { symbol: 'NVDA', quoteType: 'EQUITY', exchange: 'NasdaqGS', price: 120, averageVolume: 200_000_000 };
+  assert.equal(isReputableInstrument(good), true);
+  assert.equal(
+    isReputableInstrument({ ...good, symbol: 'SPY', quoteType: 'ETF', exchange: 'NYSEArca', price: 600, averageVolume: 70_000_000 }),
+    true,
+  );
+  assert.equal(isReputableInstrument({ ...good, price: 2.4 }), false, 'sub-$5 names are not day-trade vehicles');
+  assert.equal(isReputableInstrument({ ...good, averageVolume: 100_000 }), false, 'thin names are rejected');
+  assert.equal(isReputableInstrument({ ...good, exchange: 'LSE' }), false, 'non-US venue');
+  assert.equal(isReputableInstrument({ ...good, quoteType: 'CRYPTOCURRENCY' }), false, 'not a stock or ETF');
+  assert.equal(isReputableInstrument({ ...good, averageVolume: null }), false, 'unknown liquidity is not trusted');
+});
+
+test('the candidate ranking prefers deep liquidity over a thin mover', () => {
+  const mega = boardCandidateScore({ price: 120, averageVolume: 200_000_000, volume: 150_000_000, changePercent: 1 });
+  const thin = boardCandidateScore({ price: 8, averageVolume: 1_500_000, volume: 6_000_000, changePercent: 9 });
+  assert.ok(mega > thin, `mega cap ${mega} should outrank the thin mover ${thin}`);
 });
 
 test('not enough intraday bars returns a 422 instead of a bogus signal', () => {

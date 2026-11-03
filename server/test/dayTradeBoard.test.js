@@ -8,7 +8,7 @@ const trade = (overrides = {}) => ({
   quoteType: 'EQUITY',
   price: 100,
   changePercent: 1.8,
-  interval: '5m',
+  interval: '60m',
   session: { date: '2026-10-30' },
   action: 'buy',
   score: 6,
@@ -24,6 +24,7 @@ const trade = (overrides = {}) => ({
   triggers: { buyAbove: 99.5, sellBelow: 98.2 },
   indicators: {
     rsi14: 61.4,
+    adx14: 27.5,
     atrPct: 1.8,
     volumeRatio: 1.4,
     vwapDistancePct: 1.01,
@@ -53,7 +54,7 @@ test('a long read becomes a BUY row with the plan, levels and opening-range setu
   assert.equal(row.action, 'buy');
   assert.equal(row.bucket, 'buy');
   assert.equal(row.openingRangePosition, 'above');
-  assert.equal(row.setup, 'Opening-range breakout long');
+  assert.equal(row.setup, 'First-hour breakout long');
   assert.equal(row.plan.direction, 'long');
   assert.equal(row.plan.stopLoss, 98.9);
   assert.deepEqual(
@@ -65,6 +66,9 @@ test('a long read becomes a BUY row with the plan, levels and opening-range setu
   assert.equal(row.triggers.sellBelow, 98.2);
   assert.equal(row.relativeVolume, 2);
   assert.equal(row.rsi, 61.4);
+  assert.equal(row.adx, 27.5);
+  assert.equal(row.trendless, false);
+  assert.equal(row.interval, '60m');
   assert.ok(row.tradeability > 0 && row.tradeability <= 100);
 });
 
@@ -96,7 +100,7 @@ test('a no-trade read carries the breakout triggers instead of a plan', () => {
   assert.equal(row.action, 'wait');
   assert.equal(row.bucket, 'wait');
   assert.equal(row.plan, null);
-  assert.equal(row.setup, 'Inside the opening range — wait for the break');
+  assert.equal(row.setup, 'Inside the first-hour range — wait for the break');
   assert.equal(row.triggers.buyAbove, 99.5);
   assert.equal(row.triggers.sellBelow, 98.2);
 });
