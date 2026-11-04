@@ -11,15 +11,15 @@ const VOL_BOTTOM = 358;
 const PAD_LEFT = 6;
 const PAD_RIGHT = 76;
 
-const TIME = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/New_York',
+const TIME = new Intl.DateTimeFormat('de-DE', {
+  timeZone: 'Europe/Berlin',
   hour: '2-digit',
   minute: '2-digit',
   hour12: false,
 });
 
-const DAY = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/New_York',
+const DAY = new Intl.DateTimeFormat('de-DE', {
+  timeZone: 'Europe/Berlin',
   month: 'short',
   day: 'numeric',
 });

@@ -100,7 +100,7 @@ export default function DayTradePage({ symbol, go }) {
             {data.symbol} <span className="muted">intraday read</span>
           </h1>
           <p className="page-sub">
-            {data.name} · 1-hour bars · session {data.session.date} · updates every 60 seconds. Times are New York (ET).
+            {data.name} · 1-hour bars · US session {data.session.date} · updates every 60 seconds. Chart times are German local time (CET/CEST); signals use the US regular session (09:30–16:00 New York).
           </p>
         </div>
         <div className="head-actions">
@@ -197,7 +197,7 @@ export default function DayTradePage({ symbol, go }) {
             sessionStarts={data.chart.sessionStarts}
           />
           <div className="chart-foot">
-            <span>1h bars · last 5 sessions · times New York (ET) · auto-refresh 60s</span>
+            <span>1h bars · last 5 US sessions · times Germany (CET/CEST) · auto-refresh 60s</span>
             <span className="muted">ORH / ORL = first-hour high / low · PDC = prior close</span>
           </div>
         </section>

@@ -251,8 +251,9 @@ export default function DayTradeBoardPage({ go }) {
 
           <p className="day-board-note muted small">
             Tradeability is a ranking aid, not a probability: it rewards names that move, trade volume and have a decisive
-            1-hour read. A high score on a WAIT row still means no trade — use the breakout levels. Times are New York
-            (ET); the board refreshes every 60 seconds.
+            1-hour read. A high score on a WAIT row still means no trade — use the breakout levels. Signals follow the
+            US regular session (09:30–16:00 New York); chart times are shown in German local time (CET/CEST). The board
+            refreshes every 60 seconds.
           </p>
         </section>
       )}
