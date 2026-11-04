@@ -43,6 +43,7 @@ services:
       ARCHIVE_RETENTION_DAYS: "400"
       # Optional LLM keys — pass them through from your shell/.env
       LLM_PROVIDER: ${LLM_PROVIDER:-auto}
+      LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-90000}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL_DOCKER:-${OPENAI_BASE_URL:-https://api.openai.com/v1}}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}

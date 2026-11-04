@@ -395,7 +395,9 @@ When the Dockerized API calls an OpenAI-compatible service running on your host
 (such as Ollama), `localhost` points to the API container, not the host. Set
 `OPENAI_BASE_URL_DOCKER=http://host.docker.internal:11434/v1` in `.env` for
 Ollama; `OPENAI_BASE_URL` remains available for running the API directly on the
-host. Recreate the API container after changing the setting:
+host. For a slower local model, set `LLM_TIMEOUT_MS=600000` to allow up to ten
+minutes per model request. Recreate the API container after changing these
+settings:
 
 ```sh
 docker compose up -d --force-recreate api
