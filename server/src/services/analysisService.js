@@ -91,14 +91,21 @@ export async function getAnalysis(symbol, { withOptions = true, refresh = false 
     if (!quote.price) throw new HttpError(404, `No live price available for ${symbol}`);
     const analysis = buildAnalysis({ quote, history, fundamentals, benchmark: bench });
 
-    if (withOptions && ['EQUITY', 'ETF'].includes(quote.quoteType)) {
+    if (withOptions && (quote.currency || 'USD') === 'USD' && ['EQUITY', 'ETF'].includes(quote.quoteType)) {
       try {
         analysis.options = await getOptionsPlan(symbol, analysis);
       } catch (error) {
         analysis.options = { error: error.message, plans: [], summary: null };
       }
     } else {
-      analysis.options = { plans: [], summary: null, note: 'Options data is not available for this instrument.' };
+      analysis.options = {
+        plans: [],
+        summary: null,
+        note:
+          !quote.currency || quote.currency === 'USD'
+            ? 'Options data is not available for this instrument.'
+            : `Options data is not loaded for ${quote.currency || 'this'}-currency listings.`,
+      };
     }
 
     try {

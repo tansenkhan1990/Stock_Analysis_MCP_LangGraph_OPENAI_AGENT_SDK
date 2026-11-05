@@ -30,7 +30,8 @@ const qs = (params) => {
 export const api = {
   health: () => request('/health'),
   overview: () => request('/market/overview'),
-  search: (q) => request(`/market/search${qs({ q })}`),
+  search: (q, { preferGerman = false, signal } = {}) =>
+    request(`/market/search${qs({ q, preferGerman: preferGerman ? 1 : undefined })}`, { signal }),
   fx: () => request('/market/fx'),
   quote: (symbol) => request(`/market/quote/${symbol}`),
   history: (symbol, range = '1y', interval = '1d') =>

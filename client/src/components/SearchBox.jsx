@@ -6,6 +6,7 @@ export default function SearchBox({
   placeholder = 'Search ticker or company…',
   autoFocus = false,
   compact = false,
+  preferGerman = false,
   // Optional explicit submit button (e.g. "Add favorite"), so adding a ticker
   // does not depend on noticing that Enter selects the typed symbol.
   submitLabel = null,
@@ -30,26 +31,29 @@ export default function SearchBox({
     const query = value.trim();
     if (query.length < 1) {
       setResults([]);
+      setLoading(false);
       return undefined;
     }
     setLoading(true);
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
-        const data = await api.search(query);
-        setResults(data.results || []);
-        setOpen(true);
+        const data = await api.search(query, { preferGerman, signal: controller.signal });
+        if (!controller.signal.aborted) {
+          setResults(data.results || []);
+          setOpen(true);
+        }
       } catch {
-        setResults([]);
+        if (!controller.signal.aborted) setResults([]);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }, 220);
     return () => {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [value]);
+  }, [value, preferGerman]);
 
   const choose = (symbol) => {
     if (!symbol) return;
@@ -70,6 +74,7 @@ export default function SearchBox({
     } else if (event.key === 'Enter') {
       event.preventDefault();
       if (active >= 0 && results[active]) choose(results[active].symbol);
+      else if (preferGerman && results.length) choose(results[0].symbol);
       else if (/^[a-z0-9.^=-]{1,15}$/i.test(value.trim())) choose(value.trim());
     } else if (event.key === 'Escape') {
       setOpen(false);
@@ -123,6 +128,7 @@ export default function SearchBox({
                 <span className="search-symbol">{item.symbol}</span>
                 <span className="search-name">{item.name}</span>
                 <span className={`badge badge-type ${item.quoteType === 'ETF' ? 'etf' : ''}`}>{item.quoteType}</span>
+                {item.exchange && <span className="search-exchange">{item.exchange}{item.currency ? ` · ${item.currency}` : ''}</span>}
               </button>
             </li>
           ))}

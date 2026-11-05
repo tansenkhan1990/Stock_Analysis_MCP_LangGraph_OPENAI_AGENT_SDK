@@ -195,20 +195,33 @@ export async function getScreener(scrId, { count = 100 } = {}) {
   });
 }
 
-export async function searchSymbols(query) {
+export async function searchSymbols(query, { preferGerman = false } = {}) {
   const q = String(query || '').trim();
   if (q.length < 1) return [];
-  return cache.wrap(`search:${q.toLowerCase()}`, 10 * 60_000, async () => {
+  const cacheKey = `search:${q.toLowerCase()}:${preferGerman ? 'german' : 'default'}`;
+  return cache.wrap(cacheKey, 10 * 60_000, async () => {
     const raw = await withRetry(() => yf.search(q, { quotesCount: 10, newsCount: 0 }));
-    return (raw?.quotes || [])
+    const results = (raw?.quotes || [])
       .filter((item) => item.symbol && item.quoteType)
-      .map((item) => ({
-        symbol: item.symbol,
-        name: item.longname || item.shortname || item.symbol,
-        quoteType: item.quoteType,
-        exchange: item.exchDisp || item.exchange || null,
-      }))
+      .map((item) => {
+        const exchange = item.exchDisp || item.exchange || null;
+        return {
+          symbol: item.symbol,
+          name: item.longname || item.shortname || item.symbol,
+          quoteType: item.quoteType,
+          exchange,
+          currency: item.currency || (/xetra|frankfurt/i.test(exchange || '') ? 'EUR' : null),
+        };
+      })
       .slice(0, 10);
+    if (preferGerman) {
+      results.sort(
+        (a, b) =>
+          Number(/xetra|frankfurt/i.test(b.exchange || '')) -
+          Number(/xetra|frankfurt/i.test(a.exchange || '')),
+      );
+    }
+    return results;
   });
 }
 

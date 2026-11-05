@@ -474,6 +474,12 @@ a {
   white-space: nowrap;
 }
 
+.search-exchange {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 /* ============ Buttons ============ */
 .btn {
   display: inline-flex;

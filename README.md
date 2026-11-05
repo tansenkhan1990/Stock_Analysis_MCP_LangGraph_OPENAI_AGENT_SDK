@@ -282,6 +282,14 @@ A wrong or expired key does not break the app: the header badge stays on the rul
 
 After `npm run build`, `npm start` serves the SPA from Express (single-origin deploy).
 
+Yahoo Finance search includes German exchange listings (for example `SAP.DE` for
+SAP on Xetra). Choose the Xetra/Frankfurt result rather than an unsuffixed US
+listing when both are shown. The Analyzer displays a security's native quote
+currency and the provider quote timestamp. Yahoo quote timestamps can lag the
+live exchange; this app does not guarantee real-time Xetra data. A real-time
+German market-data subscription is required when guaranteed live prices are
+needed.
+
 ---
 
 ## API

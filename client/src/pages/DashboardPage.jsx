@@ -113,8 +113,10 @@ export default function DashboardPage({ go }) {
           <div className="eyebrow">MARKET COMMAND CENTER</div>
           <h1>What is the tape telling you?</h1>
           <p className="page-sub">
-            Live Yahoo Finance prices for the names you follow, each with a clear 0–100 quality score, a price range to buy in,
-            profit targets and a stop. The Buy/Hold/Sell call follows the trend, not the score.
+            Yahoo Finance quotes for the names you follow (availability and delay depend on the exchange), each with a clear
+            0–100 quality score, a price range to buy in, profit targets and a stop. This dashboard currently focuses on
+            US listings; use the Analyzer search to choose a German exchange listing such as SAP.DE. The Buy/Hold/Sell call
+            follows the trend, not the score.
           </p>
         </div>
         <div className="head-actions">

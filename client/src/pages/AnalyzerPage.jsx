@@ -44,7 +44,8 @@ const Stat = ({ label, value, tone, hint }) => (
 );
 
 function TargetLadder({ analysis }) {
-  const moneyText = useMoneyText();
+  const moneyText = useMoneyText(analysis.currency);
+  const quoteMoney = (value, digits = 2) => money(value, digits, analysis.currency);
   const { plan } = analysis;
   const price = analysis.price;
   const targets = plan.targets || [];
@@ -61,9 +62,9 @@ function TargetLadder({ analysis }) {
   return (
     <div className="target-ladder">
       <div className="ladder-axis">
-        <span className="mono">{money(scaleMin, 0)}</span>
-        <span className="mono">{money(price, 0)} now</span>
-        <span className="mono">{money(scaleMax, 0)}</span>
+        <span className="mono">{quoteMoney(scaleMin, 0)}</span>
+        <span className="mono">{quoteMoney(price, 0)} now</span>
+        <span className="mono">{quoteMoney(scaleMax, 0)}</span>
       </div>
       <div className="ladder-track">
         {zone && (
@@ -79,7 +80,7 @@ function TargetLadder({ analysis }) {
           <div key={target.label} className="ladder-target">
             <div className="ladder-target-top">
               <span className={`target-badge ${target.label.toLowerCase()}`}>{target.label}</span>
-              <strong className="mono">{money(target.price)}</strong>
+              <strong className="mono">{quoteMoney(target.price)}</strong>
               <span className={`mono ${plan.direction === 'long' ? 'up' : 'down'}`}>
                 {plan.direction === 'long' ? '+' : '−'}
                 {target.upsidePct}%
@@ -97,7 +98,7 @@ function TargetLadder({ analysis }) {
         <div className="ladder-target stop">
           <div className="ladder-target-top">
             <span className="target-badge stop">STOP</span>
-            <strong className="mono down">{money(plan.stopLoss)}</strong>
+            <strong className="mono down">{quoteMoney(plan.stopLoss)}</strong>
             <span className="muted small">invalidation</span>
           </div>
         </div>
@@ -108,8 +109,8 @@ function TargetLadder({ analysis }) {
 
 export default function AnalyzerPage({ symbol, go }) {
   const { code, rate, live } = useCurrency();
-  const moneyText = useMoneyText();
   const [analysis, setAnalysis] = useState(null);
+  const moneyText = useMoneyText(analysis?.currency);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -196,7 +197,7 @@ export default function AnalyzerPage({ symbol, go }) {
         <div className="analyzer-search-panel panel">
           <h1>Analyze a stock or ETF</h1>
           <p className="muted">Search a ticker or company name to generate a scored trade plan.</p>
-          <SearchBox onSelect={(next) => go(`/analyze/${next}`)} autoFocus />
+          <SearchBox onSelect={(next) => go(`/analyze/${next}`)} autoFocus preferGerman placeholder="Search a ticker or German exchange listing (e.g. SAP.DE)…" />
         </div>
         <div className="alert alert-error">
           <strong>Could not analyze {symbol}.</strong> {error}
@@ -206,6 +207,7 @@ export default function AnalyzerPage({ symbol, go }) {
   }
 
   const { plan, indicators, score, levels, fundamentals, options } = analysis;
+  const quoteMoney = (value, digits = 2) => money(value, digits, analysis.currency);
   const bullish = plan.direction === 'long';
   // T2 is the "main" goal the R:R and the plan cards use; T1 is the first
   // partial-profit checkpoint on the ladder. Older payloads only have T1.
@@ -219,24 +221,24 @@ export default function AnalyzerPage({ symbol, go }) {
   const planHelp = (() => {
     if (plan.buyZone) {
       const entry = isEntryCall
-        ? `buy between ${money(plan.buyZone.low)} and ${money(plan.buyZone.high)}`
+        ? `buy between ${quoteMoney(plan.buyZone.low)} and ${quoteMoney(plan.buyZone.high)}`
         : isExitCall
-          ? `the call is ${callLabel} — no new buys right now (the ${money(plan.buyZone.low)}–${money(plan.buyZone.high)} zone only matters after the trend repairs)`
-          : `the call is ${callLabel}, so don't chase — only buy on a pullback into ${money(plan.buyZone.low)}–${money(plan.buyZone.high)}`;
+          ? `the call is ${callLabel} — no new buys right now (the ${quoteMoney(plan.buyZone.low)}–${quoteMoney(plan.buyZone.high)} zone only matters after the trend repairs)`
+          : `the call is ${callLabel}, so don't chase — only buy on a pullback into ${quoteMoney(plan.buyZone.low)}–${quoteMoney(plan.buyZone.high)}`;
       const goals = mainTarget
-        ? ` Take the first profit at T1 ${money(firstTarget?.price)}, aim for the main target T2 ${money(mainTarget?.price)}, and exit if a daily close falls below ${money(plan.stopLoss)}.`
+        ? ` Take the first profit at T1 ${quoteMoney(firstTarget?.price)}, aim for the main target T2 ${quoteMoney(mainTarget?.price)}, and exit if a daily close falls below ${quoteMoney(plan.stopLoss)}.`
         : '';
-      return `In simple terms: ${entry} (planned entry ${money(plan.entryRef)} in the middle).${goals}`;
+      return `In simple terms: ${entry} (planned entry ${quoteMoney(plan.entryRef)} in the middle).${goals}`;
     }
     const zone = plan.shortZone
-      ? `there is no buy zone right now — the nearest band to sell into is ${money(plan.shortZone.low)}–${money(plan.shortZone.high)}`
+      ? `there is no buy zone right now — the nearest band to sell into is ${quoteMoney(plan.shortZone.low)}–${quoteMoney(plan.shortZone.high)}`
       : isExitCall
         ? `there is no buy zone right now — the call is ${callLabel}, so the levels here are for exiting or trimming, not for a new long`
         : 'there is no buy zone right now, so wait for a better setup';
     const goals = mainTarget
-      ? ` ${bullish ? 'Upside targets are' : 'Downside levels are'} T1 ${money(firstTarget?.price)} and T2 ${money(mainTarget?.price)}.`
+      ? ` ${bullish ? 'Upside targets are' : 'Downside levels are'} T1 ${quoteMoney(firstTarget?.price)} and T2 ${quoteMoney(mainTarget?.price)}.`
       : '';
-    return `In simple terms: ${zone}.${goals} The idea is wrong if a daily close ${bullish ? 'falls below' : 'rises above'} ${money(plan.stopLoss)}.`;
+    return `In simple terms: ${zone}.${goals} The idea is wrong if a daily close ${bullish ? 'falls below' : 'rises above'} ${quoteMoney(plan.stopLoss)}.`;
   })();
   const optionPlans = options?.plans || [];
   const activePlan = optionPlans[optionIndex];
@@ -247,7 +249,11 @@ export default function AnalyzerPage({ symbol, go }) {
   return (
     <div className="page analyzer">
       <div className="analyzer-toolbar">
-        <SearchBox onSelect={(next) => go(`/analyze/${next}`)} placeholder={`Analyze another ticker (currently ${symbol})…`} />
+        <SearchBox
+          onSelect={(next) => go(`/analyze/${next}`)}
+          preferGerman
+          placeholder={`Analyze another ticker or German listing (currently ${symbol})…`}
+        />
         <div className="toolbar-actions">
           <button type="button" className="btn btn-ghost" onClick={() => load(true)} disabled={refreshing}>
             <span className={refreshing ? 'spin' : ''}>↻</span> Refresh
@@ -279,20 +285,25 @@ export default function AnalyzerPage({ symbol, go }) {
             {fundamentals?.sector && <span>{fundamentals.sector}</span>}
             {fundamentals?.industry && <span>{fundamentals.industry}</span>}
             {analysis.quote?.averageVolume && <span>Avg vol {compact(analysis.quote.averageVolume)}</span>}
-            {code !== 'USD' && live && (
+            {analysis.currency && analysis.currency !== 'USD' && (
+              <span className="fx-source">Native quote currency: {analysis.currency}</span>
+            )}
+            {analysis.currency === 'USD' && code !== 'USD' && live && (
               <span className="fx-source">
                 {code} at 1 USD = {rate.toFixed(4)} {code} (live FX)
               </span>
             )}
-            {code !== 'USD' && !live && <span className="fx-source warn">live FX unavailable — prices in USD</span>}
-            <span>Updated {timeAgo(analysis.generatedAt)}</span>
+            {analysis.currency === 'USD' && code !== 'USD' && !live && (
+              <span className="fx-source warn">live FX unavailable — prices in USD</span>
+            )}
+            <span>Quote updated {timeAgo(analysis.quote?.updatedAt)} · Yahoo Finance quotes may be delayed</span>
           </div>
         </div>
         <div className="quote-price-block">
-          <div className="quote-price">{money(analysis.price)}</div>
+          <div className="quote-price">{quoteMoney(analysis.price)}</div>
           <div className={`quote-change ${toneForChange(analysis.changePercent)}`}>
             {analysis.change > 0 ? '+' : analysis.change < 0 ? '−' : ''}
-            {money(Math.abs(analysis.change))} ({pct(analysis.changePercent)})
+            {quoteMoney(Math.abs(analysis.change))} ({pct(analysis.changePercent)})
           </div>
           <div className="quote-range">
             <span>52w</span>
@@ -301,7 +312,7 @@ export default function AnalyzerPage({ symbol, go }) {
               <div className="range-marker" style={{ left: `${rangePosition}%` }} />
             </div>
             <span className="mono">
-              {money(levels.fiftyTwoWeekLow, 0)}–{money(levels.fiftyTwoWeekHigh, 0)}
+              {quoteMoney(levels.fiftyTwoWeekLow, 0)}–{quoteMoney(levels.fiftyTwoWeekHigh, 0)}
             </span>
           </div>
         </div>
@@ -368,17 +379,17 @@ export default function AnalyzerPage({ symbol, go }) {
 
             <div className="ai-call-side">
               <div className="day-level-grid">
-                <Stat label="Entry" value={money(aiDecision.keyLevels?.entry)} />
-                <Stat label="Target" value={money(aiDecision.keyLevels?.target)} tone="up" />
-                <Stat label="Stop" value={money(aiDecision.keyLevels?.stop)} tone="down" />
+                <Stat label="Entry" value={quoteMoney(aiDecision.keyLevels?.entry)} />
+                <Stat label="Target" value={quoteMoney(aiDecision.keyLevels?.target)} tone="up" />
+                <Stat label="Stop" value={quoteMoney(aiDecision.keyLevels?.stop)} tone="down" />
                 <Stat
                   label={aiDecision.triggers?.buyLabel || 'Buy above'}
-                  value={money(aiDecision.triggers?.buyAbove)}
+                  value={quoteMoney(aiDecision.triggers?.buyAbove)}
                   tone="up"
                 />
                 <Stat
                   label={aiDecision.triggers?.sellLabel || 'Exit below'}
-                  value={money(aiDecision.triggers?.sellBelow)}
+                  value={quoteMoney(aiDecision.triggers?.sellBelow)}
                   tone="down"
                   hint={aiDecision.triggers?.sellHint}
                 />
@@ -468,16 +479,16 @@ export default function AnalyzerPage({ symbol, go }) {
                 {plan.buyZone ? (
                   <>
                     <strong className="plan-value">
-                      {money(plan.buyZone.low)} <span>–</span> {money(plan.buyZone.high)}
+                      {quoteMoney(plan.buyZone.low)} <span>–</span> {quoteMoney(plan.buyZone.high)}
                     </strong>
                     <span className="plan-foot wrap">
-                      Price range to accumulate · planned entry {money(plan.entryRef)} (middle)
+                      Price range to accumulate · planned entry {quoteMoney(plan.entryRef)} (middle)
                     </span>
                   </>
                 ) : plan.shortZone ? (
                   <>
                     <strong className="plan-value">
-                      {money(plan.shortZone.low)} <span>–</span> {money(plan.shortZone.high)}
+                      {quoteMoney(plan.shortZone.low)} <span>–</span> {quoteMoney(plan.shortZone.high)}
                     </strong>
                     <span className="plan-foot wrap">
                       {bullish
@@ -497,7 +508,7 @@ export default function AnalyzerPage({ symbol, go }) {
                   {plan.direction === 'short' ? 'Downside target (T2)' : isExitCall ? 'Trim target (T2)' : 'Main target (T2)'}
                 </span>
                 <strong className={`plan-value ${bullish ? 'up' : 'down'}`}>
-                  {money(mainTarget?.price)}
+                  {quoteMoney(mainTarget?.price)}
                   <span className={`plan-upside ${bullish ? '' : 'down'}`}>
                     {bullish ? '+' : '−'}
                     {num(mainTarget?.upsidePct, 1)}%
@@ -505,13 +516,13 @@ export default function AnalyzerPage({ symbol, go }) {
                 </strong>
                 <span className="plan-foot wrap">
                   {firstTarget && firstTarget !== mainTarget
-                    ? `First checkpoint T1 ${money(firstTarget.price, 0)} · ${mainTarget?.source || '—'}`
+                    ? `First checkpoint T1 ${quoteMoney(firstTarget.price, 0)} · ${mainTarget?.source || '—'}`
                     : mainTarget?.source || '—'}
                 </span>
               </div>
               <div className="plan-card">
                 <span className="plan-label">Stop loss (exit)</span>
-                <strong className="plan-value down">{money(plan.stopLoss)}</strong>
+                <strong className="plan-value down">{quoteMoney(plan.stopLoss)}</strong>
                 <span className="plan-foot wrap">
                   Exit if a daily close {bullish ? 'falls below' : 'rises above'} this price
                 </span>
@@ -522,8 +533,8 @@ export default function AnalyzerPage({ symbol, go }) {
                   {plan.riskBudgetExample?.shares ?? '—'} <span className="unit">shares</span>
                 </strong>
                 <span className="plan-foot wrap">
-                  Risking {money(plan.riskBudgetExample?.riskDollars, 0)} of {money(plan.riskBudgetExample?.accountSize, 0)} ·{' '}
-                  {money(plan.riskPerShare)} per share
+                  Risking {quoteMoney(plan.riskBudgetExample?.riskDollars, 0)} of {quoteMoney(plan.riskBudgetExample?.accountSize, 0)} ·{' '}
+                  {quoteMoney(plan.riskPerShare)} per share
                 </span>
               </div>
             </div>
@@ -579,6 +590,7 @@ export default function AnalyzerPage({ symbol, go }) {
               levels={levels}
               showSma={showSma}
               showRsi={showRsi}
+              currency={analysis.currency}
             />
             <div className="chart-foot">
               <span>180 sessions · daily</span>
@@ -725,9 +737,9 @@ export default function AnalyzerPage({ symbol, go }) {
                 value={Number.isFinite(indicators.volumeRatio) ? `${num(indicators.volumeRatio * 100, 0)}%` : '—'}
                 hint="5d vs 50d average"
               />
-              <Stat label="SMA 20" value={money(indicators.sma20)} />
-              <Stat label="SMA 50" value={money(indicators.sma50)} />
-              <Stat label="SMA 200" value={money(indicators.sma200)} />
+              <Stat label="SMA 20" value={quoteMoney(indicators.sma20)} />
+              <Stat label="SMA 50" value={quoteMoney(indicators.sma50)} />
+              <Stat label="SMA 200" value={quoteMoney(indicators.sma200)} />
               <Stat label="Max drawdown" value={`${indicators.maxDrawdown ?? '—'}%`} />
               <Stat label="Bollinger width" value={`${num(indicators.bollingerWidth, 1)}%`} />
               <Stat label="MACD hist" value={num(indicators.macdHistogram, 2)} tone={indicators.macdHistogram > 0 ? 'up' : 'down'} />
@@ -740,17 +752,17 @@ export default function AnalyzerPage({ symbol, go }) {
             <div className="level-list">
               {levels.resistances.slice(0, 3).map((level) => (
                 <div key={`r-${level.price}`} className="level-row resistance">
-                  <span className="level-price mono">{money(level.price)}</span>
+                  <span className="level-price mono">{quoteMoney(level.price)}</span>
                   <span>{level.source}</span>
                   <span className="muted small">R</span>
                 </div>
               ))}
               <div className="level-now">
-                <span className="mono">{money(analysis.price)}</span> spot
+                <span className="mono">{quoteMoney(analysis.price)}</span> spot
               </div>
               {levels.supports.slice(0, 3).map((level) => (
                 <div key={`s-${level.price}`} className="level-row support">
-                  <span className="level-price mono">{money(level.price)}</span>
+                  <span className="level-price mono">{quoteMoney(level.price)}</span>
                   <span>{level.source}</span>
                   <span className="muted small">S</span>
                 </div>
@@ -790,7 +802,7 @@ export default function AnalyzerPage({ symbol, go }) {
               <table className="mini-table">
                 <tbody>
                   {[
-                    ['Market cap', analysis.quote?.marketCap ? bigNumber(analysis.quote.marketCap) : null, true],
+                    ['Market cap', analysis.quote?.marketCap ? bigNumber(analysis.quote.marketCap, analysis.currency) : null, true],
                     ['P/E (ttm)', num(fundamentals.trailingPE ?? analysis.quote?.trailingPE, 1)],
                     ['Forward P/E', num(fundamentals.forwardPE ?? analysis.quote?.forwardPE, 1)],
                     ['PEG', num(fundamentals.pegRatio, 2)],
@@ -800,7 +812,7 @@ export default function AnalyzerPage({ symbol, go }) {
                     ['ROE', fundamentals.returnOnEquity !== null ? pct(fundamentals.returnOnEquity * 100, 1) : null],
                     ['Debt/Equity', num(fundamentals.debtToEquity, 1)],
                     ['Dividend yield', analysis.quote?.dividendYield ? pct(analysis.quote.dividendYield * 100, 2, false) : null],
-                    ['Analyst target', fundamentals.analystTarget ? money(fundamentals.analystTarget) : null],
+                    ['Analyst target', fundamentals.analystTarget ? quoteMoney(fundamentals.analystTarget) : null],
                     ['Recommendation', fundamentals.recommendationMean ? `${num(fundamentals.recommendationMean, 2)} / 5` : null],
                     ['Expense ratio', fundamentals.expenseRatio !== undefined && fundamentals.expenseRatio !== null ? `${(fundamentals.expenseRatio * 100).toFixed(2)}%` : null],
                     ['Fund family', fundamentals.fundFamily],

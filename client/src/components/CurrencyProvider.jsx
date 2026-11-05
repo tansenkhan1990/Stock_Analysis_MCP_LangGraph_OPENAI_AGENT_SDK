@@ -73,7 +73,7 @@ export const useCurrency = () => useContext(CurrencyContext);
  * Convert `$` amounts inside free-form text (analysis rationale, AI prose) to
  * the display currency, and re-render when the currency flips.
  */
-export const useMoneyText = () => {
+export const useMoneyText = (sourceCurrency = 'USD') => {
   useCurrency();
-  return convertMoneyText;
+  return (text) => convertMoneyText(text, sourceCurrency);
 };

@@ -1,8 +1,8 @@
 /**
  * Display currency for the whole app.
  *
- * Quotes arrive from Yahoo in USD. The user can show them in EUR (converted at
- * the live USD→EUR rate from `/api/market/fx`) or natively in USD.
+ * Yahoo quotes retain their native currency. The user can show USD and EUR
+ * listings in the selected display currency when the live FX rate is available.
  *
  * `money()` and the other formatters in `format.js` read this module-level
  * state, so every price in the UI flips with one switch. `CurrencyProvider`
@@ -53,21 +53,33 @@ export const activeRate = () => {
 
 export const displayCurrency = () => (activeRate() === null ? 'USD' : state.code);
 
-export const currencySymbol = () => SYMBOLS[displayCurrency()] || '';
-
-export const convertAmount = (value) => {
-  const rate = activeRate();
-  const amount = Number(value);
-  return rate === null ? amount : amount * rate;
+export const currencySymbol = (sourceCurrency = 'USD') => {
+  const source = String(sourceCurrency || 'USD').toUpperCase();
+  const target = displayCurrency();
+  const rate = Number.isFinite(state.rate) && state.rate > 0 ? state.rate : null;
+  if (rate === null || (source !== 'USD' && source !== 'EUR')) return SYMBOLS[source] || `${source} `;
+  return SYMBOLS[target] || '';
 };
 
-/** Currency code the UI is actually showing (USD while EUR FX is unavailable). */
-export const isConverted = () => activeRate() !== null;
+export const convertAmount = (value, sourceCurrency = 'USD') => {
+  const rate = Number.isFinite(state.rate) && state.rate > 0 ? state.rate : null;
+  const amount = Number(value);
+  const source = String(sourceCurrency || 'USD').toUpperCase();
+  const target = displayCurrency();
+  if (source === target || rate === null) return amount;
+  if (source === 'USD' && target === 'EUR') return amount * rate;
+  if (source === 'EUR' && target === 'USD') return amount / rate;
+  return amount;
+};
 
-export const formatMoney = (value, digits = 2, { convert = true } = {}) => {
+export const formatMoney = (value, digits = 2, { convert = true, sourceCurrency = 'USD' } = {}) => {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
-  const code = convert ? displayCurrency() : 'USD';
-  const amount = convert ? convertAmount(value) : Number(value);
+  const source = String(sourceCurrency || 'USD').toUpperCase();
+  const target = convert ? displayCurrency() : source;
+  const rate = Number.isFinite(state.rate) && state.rate > 0 ? state.rate : null;
+  const canConvert = rate !== null && ((source === 'USD' && target === 'EUR') || (source === 'EUR' && target === 'USD'));
+  const code = canConvert || source === target ? target : source;
+  const amount = convert ? convertAmount(value, source) : Number(value);
   return amount.toLocaleString('en-US', {
     style: 'currency',
     currency: code,
@@ -82,10 +94,15 @@ export const formatMoney = (value, digits = 2, { convert = true } = {}) => {
  */
 const SUFFIX_SCALE = { K: 1e3, M: 1e6, B: 1e9, T: 1e12 };
 
-export const convertMoneyText = (text) => {
-  if (!isConverted()) return String(text ?? '');
-  const rate = activeRate();
-  const symbol = SYMBOLS[displayCurrency()] || '';
+export const convertMoneyText = (text, sourceCurrency = 'USD') => {
+  const source = String(sourceCurrency || 'USD').toUpperCase();
+  const target = displayCurrency();
+  const rate = Number.isFinite(state.rate) && state.rate > 0 ? state.rate : null;
+  const rawText = String(text ?? '');
+  if (source === target) return source === 'EUR' ? rawText.replace(/\$/g, '€') : rawText;
+  if (source !== 'USD' && source !== 'EUR') return rawText;
+  if (rate === null) return source === 'EUR' ? rawText.replace(/\$/g, '€') : rawText;
+  const symbol = SYMBOLS[target] || '';
   return String(text ?? '').replace(
     /(-?)\$(-?\d[\d,]*(?:\.\d+)?)([KMBTk])?/g,
     (match, leading, rawNumber, suffix) => {
@@ -93,7 +110,9 @@ export const convertMoneyText = (text) => {
       if (!Number.isFinite(value)) return match;
       const magnitude = suffix ? SUFFIX_SCALE[suffix.toUpperCase()] : 1;
       // Both "-$10" and "$-10" mean minus ten; never emit a double sign.
-      const converted = Math.abs(value * magnitude * rate) * (leading === '-' || value < 0 ? -1 : 1);
+      const direction = leading === '-' || value < 0 ? -1 : 1;
+      const amount = Math.abs(value * magnitude);
+      const converted = (source === 'USD' ? amount * rate : amount / rate) * direction;
       const sign = converted < 0 ? '−' : '';
       const abs = Math.abs(converted);
 

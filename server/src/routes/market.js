@@ -25,7 +25,10 @@ marketRouter.get(
   asyncHandler(async (req, res) => {
     const query = String(req.query.q || '').trim();
     if (!query) return res.json({ query, results: [] });
-    res.json({ query, results: await searchSymbols(query) });
+    res.json({
+      query,
+      results: await searchSymbols(query, { preferGerman: req.query.preferGerman === '1' }),
+    });
   }),
 );
 

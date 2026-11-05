@@ -27,7 +27,7 @@ function linePath(values, xFor, yFor) {
   return path.trim();
 }
 
-export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels, showSma = true, showRsi = true }) {
+export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels, showSma = true, showRsi = true, currency = 'USD' }) {
   // Subscribe so axis labels and tooltips re-render when the currency flips.
   useCurrency();
 
@@ -124,7 +124,7 @@ export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels
             strokeDasharray="3 5"
           />
           <text x={WIDTH - PAD_RIGHT + 8} y={yFor(price) + 3.5} className="chart-axis-label">
-            {money(price, price > 100 ? 0 : 2)}
+            {money(price, price > 100 ? 0 : 2, currency)}
           </text>
         </g>
       ))}
@@ -140,7 +140,7 @@ export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels
             strokeDasharray="6 4"
           />
           <text x={PAD_LEFT + 6} y={yFor(support) - 5} className="chart-zone-label support">
-            support {money(support)}
+            support {money(support, 2, currency)}
           </text>
         </g>
       )}
@@ -155,7 +155,7 @@ export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels
             strokeDasharray="6 4"
           />
           <text x={PAD_LEFT + 6} y={yFor(resistance) - 5} className="chart-zone-label resistance">
-            resistance {money(resistance)}
+            resistance {money(resistance, 2, currency)}
           </text>
         </g>
       )}
@@ -187,7 +187,7 @@ export default function CandleChart({ bars = [], overlays = {}, rsi = [], levels
               opacity="0.35"
             />
             <title>
-              {`${shortDate(bar.date)}  O ${money(bar.open)} H ${money(bar.high)} L ${money(bar.low)} C ${money(bar.close)}`}
+              {`${shortDate(bar.date)}  O ${money(bar.open, 2, currency)} H ${money(bar.high, 2, currency)} L ${money(bar.low, 2, currency)} C ${money(bar.close, 2, currency)}`}
             </title>
           </g>
         );

@@ -1,7 +1,8 @@
 import { convertAmount, currencySymbol, formatMoney } from './currency.js';
 
 /** Display currency (EUR by default, live-converted) — used for all prices. */
-export const money = (value, digits = 2) => formatMoney(value, digits);
+export const money = (value, digits = 2, sourceCurrency = 'USD') =>
+  formatMoney(value, digits, { sourceCurrency });
 
 /** Native US-dollar formatting for option contract terms (strikes, premiums). */
 export const usd = (value, digits = 2) => formatMoney(value, digits, { convert: false });
@@ -21,10 +22,10 @@ export const pct = (value, digits = 2, signed = true) => {
 };
 
 /** Market values (market cap, …) in the display currency. */
-export const bigNumber = (value) => {
+export const bigNumber = (value, sourceCurrency = 'USD') => {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
-  const converted = convertAmount(value);
-  const symbol = currencySymbol();
+  const converted = convertAmount(value, sourceCurrency);
+  const symbol = currencySymbol(sourceCurrency);
   const abs = Math.abs(converted);
   if (abs >= 1e12) return `${symbol}${(converted / 1e12).toFixed(2)}T`;
   if (abs >= 1e9) return `${symbol}${(converted / 1e9).toFixed(2)}B`;
