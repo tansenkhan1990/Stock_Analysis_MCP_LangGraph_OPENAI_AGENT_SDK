@@ -27,6 +27,8 @@ const HISTORY_RANGE = '1mo';
 const US_VENUE_RE = /nasdaq|nyse|amex|arca|bats|cboe/i;
 /** The desk call is deliberately slower-moving than the 60-second bar cache. */
 const DECISION_TTL = 10 * 60_000;
+/** A board scan asks the model about several names; keep the burst small. */
+const BOARD_AI_CONCURRENCY = 3;
 
 /**
  * The intraday model uses the US regular session (09:30–16:00 New York) and the
@@ -131,12 +133,116 @@ async function loadDayBoardUniverse({ scope = 'market', symbols = [], depth = DE
   };
 }
 
+/** Small worker pool so a board scan cannot open a dozen model calls at once. */
+async function mapWithConcurrency(items, worker, concurrency = BOARD_AI_CONCURRENCY) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      try {
+        results[index] = { status: 'fulfilled', value: await worker(items[index], index) };
+      } catch (error) {
+        results[index] = { status: 'rejected', reason: error };
+      }
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+/**
+ * One model call per board name, decided from the mechanical intraday read and
+ * the whole-day pattern. Cached per symbol and session, so a 60-second board
+ * refresh does not pay for a new call every minute.
+ */
+async function decideBoardName({ trade, provider, refresh }) {
+  const key = `intradayBoardDecision:${trade.symbol}:${trade.interval}:${trade.session?.date ?? 'na'}`;
+  if (refresh) cache.clear(key);
+  const cached = cache.get(key);
+  if (cached) return { ...cached, decisionMeta: { ...cached.decisionMeta, cached: true } };
+
+  try {
+    const result = await decideIntradayWithLLM({
+      dossier: buildIntradayDossier({ trade, context: null }),
+      fallback: trade,
+    });
+    const decisionMeta = {
+      provider: provider.provider,
+      model: provider.model,
+      latencyMs: result.latencyMs,
+      usage: result.usage,
+      cached: false,
+    };
+    cache.set(key, { decision: result.decision, decisionMeta }, DECISION_TTL);
+    return { decision: result.decision, decisionMeta, decisionError: null };
+  } catch (error) {
+    return {
+      decision: null,
+      decisionMeta: { provider: 'rule-engine', model: 'MarketPilot rule engine', cached: false },
+      decisionError: `AI desk call failed (${error.message}) — showing the mechanical read.`,
+    };
+  }
+}
+
+/**
+ * The board shows the model's BUY / SELL / WAIT when a provider is live. The
+ * engine read stays on every row, and any failed call falls back to it.
+ */
+async function applyBoardDesk({ trades, useAi, refresh }) {
+  const provider = describeProvider();
+  if (!useAi || !provider.live) {
+    return {
+      trades: trades.map((trade) => mergeIntradayDecision({ trade })),
+      ai: {
+        enabled: false,
+        decided: 0,
+        provider: 'rule-engine',
+        model: 'MarketPilot rule engine',
+        note: `No LLM key configured — the board shows the mechanical read (${provider.label}).`,
+      },
+      errors: [],
+    };
+  }
+
+  const settled = await mapWithConcurrency(trades, (trade) => decideBoardName({ trade, provider, refresh }));
+  const errors = [];
+  let decided = 0;
+  const merged = trades.map((trade, index) => {
+    const result = settled[index];
+    if (!result || result.status !== 'fulfilled') {
+      errors.push(`${trade.symbol}: ${result?.reason?.message || 'AI desk call failed'}`);
+      return mergeIntradayDecision({ trade });
+    }
+    const { decision, decisionMeta, decisionError } = result.value;
+    if (decision) decided += 1;
+    if (decisionError) errors.push(`${trade.symbol}: ${decisionError}`);
+    return mergeIntradayDecision({ trade, decision, decisionMeta, decisionError });
+  });
+
+  return {
+    trades: merged,
+    ai: {
+      enabled: true,
+      decided,
+      provider: provider.provider,
+      model: provider.model,
+      note:
+        decided === trades.length
+          ? null
+          : `${trades.length - decided} name(s) fell back to the mechanical read.`,
+    },
+    errors,
+  };
+}
+
 /**
  * Build the board for one universe. A name that fails (no quote, a non-US
  * listing, a thin session) is recorded and skipped — one bad ticker must never
  * take the whole board down.
  */
-async function buildDayBoard({ scope, symbols, depth, refresh }) {
+async function buildDayBoard({ scope, symbols, depth, refresh, useAi = false }) {
   const universe = await loadDayBoardUniverse({ scope, symbols, depth, refresh });
   const generatedAt = new Date().toISOString();
   const errors = [];
@@ -150,6 +256,7 @@ async function buildDayBoard({ scope, symbols, depth, refresh }) {
       scanned: 0,
       interval: DAY_TRADE_INTERVAL,
       marketState: null,
+      ai: null,
       rows: [],
       buy: [],
       sell: [],
@@ -192,18 +299,21 @@ async function buildDayBoard({ scope, symbols, depth, refresh }) {
   });
 
   const marketState = quotes[0]?.marketState ?? null;
+  // The model, not just the rule engine, decides each row's BUY / SELL / WAIT.
+  const desk = await applyBoardDesk({ trades, useAi, refresh });
 
   return {
     generatedAt,
     scope: universe.scope,
-    depth: trades.length,
-    scanned: trades.length,
+    depth: desk.trades.length,
+    scanned: desk.trades.length,
     requested: universe.symbols.length,
     universeSize: universe.universeSize ?? universe.symbols.length,
     interval: DAY_TRADE_INTERVAL,
     marketState,
-    ...rankDayTrades(trades),
-    errors: errors.slice(0, 6),
+    ...rankDayTrades(desk.trades),
+    ai: desk.ai,
+    errors: [...desk.errors, ...errors].slice(0, 6),
     note: trades.length
       ? null
       : `No session to read yet${marketState ? ` (market ${marketState.toLowerCase()})` : ''} — the board fills during the 09:30–16:00 New York session, once the first hour has closed.`,
@@ -219,20 +329,26 @@ export async function getDayTradeBoard({
   scope = 'market',
   depth = DEFAULT_DAY_BOARD_DEPTH,
   refresh = false,
+  ai,
 } = {}) {
   const cap = Math.min(Math.max(Number(depth) || DEFAULT_DAY_BOARD_DEPTH, 1), MAX_DAY_BOARD_DEPTH);
   const effectiveScope = DAY_BOARD_SCOPES.includes(scope) ? scope : 'market';
-  const key = `dayboard:${effectiveScope}:${cap}:${normalizeSymbols(symbols).join(',')}`;
+  const provider = describeProvider();
+  // Default: the model decides whenever a key is configured, like the
+  // single-ticker page. `ai=0` forces the mechanical board, `ai=1` asks anyway.
+  const useAi = ai === undefined || ai === null ? provider.live : Boolean(ai);
+  const key = `dayboard:${effectiveScope}:${cap}:${useAi ? 'ai' : 'rule'}:${normalizeSymbols(symbols).join(',')}`;
 
   if (refresh) {
     cache.clear('dayboard:');
+    cache.clear('intradayBoardDecision:');
     // quote: / quoteBatch: are the live tape behind the universe ranking.
     cache.clear('quote:');
     cache.clear('quoteBatch:');
   }
 
   return cache.wrap(key, BOARD_TTL, () =>
-    buildDayBoard({ scope: effectiveScope, symbols, depth: cap, refresh }),
+    buildDayBoard({ scope: effectiveScope, symbols, depth: cap, refresh, useAi }),
   );
 }
 

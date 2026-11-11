@@ -5912,3 +5912,357 @@ a {
     margin-left: 0;
   }
 }
+
+/* ============ Forecast lab ============ */
+.forecast-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.fc-card {
+  border-top: 2px solid var(--border-strong);
+}
+.fc-card.up {
+  border-top-color: rgba(52, 211, 153, 0.65);
+}
+.fc-card.down {
+  border-top-color: rgba(248, 113, 113, 0.65);
+}
+.fc-card.flat {
+  border-top-color: rgba(148, 163, 184, 0.4);
+}
+.fc-horizon {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+.fc-prob {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 2px 0 14px;
+}
+.fc-arrow {
+  font-size: 22px;
+  line-height: 1;
+}
+.fc-card.up .fc-arrow,
+.fc-card.up .fc-prob-value {
+  color: var(--up);
+}
+.fc-card.down .fc-arrow,
+.fc-card.down .fc-prob-value {
+  color: var(--down);
+}
+.fc-card.flat .fc-arrow,
+.fc-card.flat .fc-prob-value {
+  color: var(--muted);
+}
+.fc-prob-value {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+.fc-levels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.fc-drivers {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fc-drivers li {
+  position: relative;
+  padding-left: 13px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.fc-drivers li::before {
+  content: '›';
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+}
+.fc-caveats li {
+  color: var(--warn);
+}
+.fc-caveats li::before {
+  content: '!';
+  color: var(--warn);
+  font-weight: 700;
+}
+.forecast-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.fc-score {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+.fc-analog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+.fc-analog-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 10px;
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.fc-analog-row b {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.fc-note {
+  margin-top: 12px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted-2);
+}
+.fc-call {
+  margin-bottom: 18px;
+  border-left: 2px solid var(--accent);
+}
+.fc-thesis {
+  margin: 6px 0 10px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.fc-news-takeaway {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.fc-news {
+  list-style: none;
+  margin: 4px 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.fc-news li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.fc-news-title {
+  flex: 1;
+}
+.fc-news-date {
+  white-space: nowrap;
+}
+.fc-deep {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+.fc-deep-card h3 {
+  margin: 4px 0 6px;
+  font-size: 15px;
+  line-height: 1.35;
+}
+.fc-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.fc-kv > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px dashed var(--border);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.fc-kv b {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  text-align: right;
+}
+
+@media (max-width: 980px) {
+  .fc-deep {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 980px) {
+  .forecast-cards,
+  .forecast-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.forecast-qa {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.qa-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.qa-chip {
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  background: var(--accent-soft);
+  color: #93c5fd;
+  text-align: left;
+}
+.qa-chip:hover:not(:disabled) {
+  border-color: rgba(56, 189, 248, 0.55);
+}
+.qa-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.qa-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 2px;
+}
+.qa-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.qa-turn.user {
+  align-items: flex-end;
+}
+.qa-bubble {
+  max-width: min(780px, 92%);
+  padding: 10px 13px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.05);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.qa-turn.user .qa-bubble {
+  background: var(--accent-soft);
+  border-color: rgba(56, 189, 248, 0.28);
+}
+.qa-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.qa-note {
+  font-size: 10.5px;
+  color: var(--warn);
+}
+.qa-composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+.qa-composer input {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .qa-composer {
+    flex-wrap: wrap;
+  }
+  .qa-composer input {
+    flex-basis: 100%;
+  }
+}
+
+/* Risers board inside the Forecast lab */
+.forecast-board-panel .day-board-summary {
+  margin: 4px 0 14px;
+}
+.forecast-board .rank-cell {
+  width: 28px;
+  font-family: var(--mono);
+  color: var(--muted-2);
+}
+.forecast-board .ticker-cell {
+  min-width: 190px;
+}
+.fc-why {
+  display: block;
+  margin-top: 2px;
+  max-width: 300px;
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: var(--muted-2);
+  white-space: normal;
+}
+.fc-chance {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.fc-chance.up {
+  color: var(--up);
+  border-color: rgba(52, 211, 153, 0.3);
+  background: var(--up-soft);
+}
+.fc-chance.down {
+  color: var(--down);
+  border-color: rgba(248, 113, 113, 0.3);
+  background: var(--down-soft);
+}
+.fc-chance.flat {
+  color: var(--muted);
+}
+.fc-updated {
+  font-family: var(--mono);
+  font-size: 12px !important;
+}
+
+@media (max-width: 760px) {
+  .fc-why {
+    max-width: 200px;
+  }
+}

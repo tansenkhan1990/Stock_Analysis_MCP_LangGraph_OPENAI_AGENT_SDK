@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDayTrade, dayTradeConfidence, scoreSetup } from '../src/analytics/dayTrading.js';
+import {
+  analyzeSessionPattern,
+  buildDayTrade,
+  dayTradeConfidence,
+  scoreSetup,
+} from '../src/analytics/dayTrading.js';
 import {
   DAY_TRADE_UNIVERSE,
   boardCandidateScore,
@@ -86,6 +91,9 @@ test('an uptrend above VWAP produces a long plan with R-multiple targets', () =>
   assert.ok(result.levels.vwap > 100);
   assert.equal(result.session.barMinutes, 60);
   assert.equal(result.session.openingRangeComplete, true);
+  assert.ok(result.sessionPattern, 'the read must describe the whole session');
+  assert.equal(result.sessionPattern.dayType, 'trend-up');
+  assert.equal(result.sessionPattern.vwapSide, 'above');
   // Five hourly sessions of context, so the chart is not a 14-candle stub.
   assert.equal(result.chart.sessionStarts.length, 5);
   assert.equal(result.chart.sessionStarts[0], 0);
@@ -158,6 +166,46 @@ test('scoreSetup separates long, short and no-trade conditions', () => {
     priorClose: 100.5,
   });
   assert.ok(Math.abs(neutral.score) < 4, `expected no trade, got ${neutral.score}`);
+});
+
+test('the whole-day pattern names the session shape, the gap and the VWAP side', () => {
+  const closes = [100, 99.4, 98.8, 98, 99.2, 100.8, 102];
+  const reversalBars = closes.map((close, index) => ({
+    date: `2026-10-15T${String(13 + index).padStart(2, '0')}:30:00.000Z`,
+    open: index ? closes[index - 1] : 100,
+    high: Math.max(close, index ? closes[index - 1] : 100) + 0.05,
+    low: Math.min(close, index ? closes[index - 1] : 100) - 0.05,
+    close,
+    volume: 100_000,
+  }));
+  const reversal = analyzeSessionPattern({
+    bars: reversalBars,
+    priorBars: [{ close: 95 }],
+    vwapSeries: reversalBars.map(() => 99.4),
+  });
+  assert.equal(reversal.dayType, 'reversal-up');
+  assert.equal(reversal.bias, 'bullish');
+  assert.ok(reversal.gapPct > 5, `expected a gap up, got ${reversal.gapPct}`);
+  assert.ok(reversal.closePositionPct >= 66);
+  assert.ok(reversal.secondHalfPct > 0);
+  assert.ok(reversal.summary.includes('Reversal day'));
+
+  // A tight, directionless tape is a range day, not a "failed breakout".
+  const flatBars = Array.from({ length: 7 }, (_, index) => ({
+    date: `2026-10-16T${String(13 + index).padStart(2, '0')}:30:00.000Z`,
+    open: 100,
+    high: 100.2,
+    low: 99.8,
+    close: 100 + (index % 2 ? 0.1 : -0.1),
+    volume: 100_000,
+  }));
+  const range = analyzeSessionPattern({
+    bars: flatBars,
+    vwapSeries: flatBars.map(() => 100),
+    atr: 1.5,
+  });
+  assert.equal(range.dayType, 'range-day');
+  assert.equal(range.bias, 'neutral');
 });
 
 test('a range-bound tape is damped and cannot publish a forecast', () => {

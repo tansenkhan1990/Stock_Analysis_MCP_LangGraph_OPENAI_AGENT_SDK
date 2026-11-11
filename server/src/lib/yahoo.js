@@ -225,18 +225,24 @@ export async function searchSymbols(query, { preferGerman = false } = {}) {
   });
 }
 
-export async function getNews(symbol) {
-  return cache.wrap(`news:${symbol}`, 10 * 60_000, async () => {
+export async function getNews(symbol, { limit = 6 } = {}) {
+  // The forecast desk asks for the full set (one buried earnings or deal
+  // headline can set the week); other callers keep the small default so their
+  // prompts stay compact.
+  const count = Math.min(Math.max(Math.round(Number(limit) || 6), 1), 50);
+  return cache.wrap(`news:${symbol}:${count}`, 10 * 60_000, async () => {
     try {
-      const raw = await withRetry(() => yf.search(symbol, { quotesCount: 0, newsCount: 6 }));
+      const raw = await withRetry(() => yf.search(symbol, { quotesCount: 0, newsCount: count }));
       return (raw?.news || []).map((item) => ({
         title: item.title,
+        summary: typeof item.summary === 'string' ? item.summary : '',
         publisher: item.publisher || item.provider || 'Yahoo Finance',
         link: item.link,
         publishedAt: item.providerPublishTime
           ? new Date(item.providerPublishTime).toISOString()
           : null,
         thumbnail: item.thumbnail?.resolutions?.[0]?.url || null,
+        relatedTickers: Array.isArray(item.relatedTickers) ? item.relatedTickers : [],
       }));
     } catch {
       return [];
@@ -258,6 +264,7 @@ export async function getFundamentals(symbol) {
             'upgradeDowngradeHistory',
             'recommendationTrend',
             'calendarEvents',
+            'earningsHistory',
             'earningsTrend',
             'institutionOwnership',
           ],
@@ -324,6 +331,23 @@ export async function getFundamentals(symbol) {
         earningsDate: raw.calendarEvents?.earnings?.earningsDate?.[0]
           ? new Date(raw.calendarEvents.earnings.earningsDate[0]).toISOString()
           : null,
+        // The last reported quarters (EPS actual vs consensus) and the forward
+        // growth estimates give the forecast desk the earnings trend itself,
+        // not just a date.
+        earningsHistory: (raw.earningsHistory?.history || []).slice(0, 6).map((entry) => ({
+          quarter: entry.quarter ? new Date(entry.quarter).toISOString() : null,
+          epsActual: round(num(entry.epsActual), 3),
+          epsEstimate: round(num(entry.epsEstimate), 3),
+          surprisePercent: round(num(entry.surprisePercent), 2),
+        })),
+        earningsEstimates: (raw.earningsTrend?.trend || []).slice(0, 8).map((entry) => ({
+          period: entry.period || null,
+          endDate: entry.endDate
+            ? new Date(entry.endDate).toISOString().slice(0, 10)
+            : null,
+          epsGrowth: num(entry.growth),
+          revenueGrowth: num(entry.revenueGrowth),
+        })),
         institutionTop: (raw.institutionOwnership?.ownershipList || []).slice(0, 5).map((owner) => ({
           organization: owner.organization,
           pctHeld: num(owner.pctHeld),

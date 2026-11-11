@@ -118,6 +118,13 @@ export function buildDayTradeRow(trade = {}) {
   const adx = round(trade.indicators?.adx14, 1);
   const trendless = Boolean(trade.indicators?.chop);
   const relativeVolume = Number.isFinite(Number(trade.relativeVolume)) ? Number(trade.relativeVolume) : null;
+  const pattern = trade.sessionPattern || null;
+  const ai = trade.ai || null;
+  const source = trade.source === 'ai' ? 'ai' : 'engine';
+  // When the model made the call, its conviction is the strength of the read;
+  // the mechanical score only ranks the names the engine decided.
+  const edgeScore =
+    source === 'ai' ? ((Number(trade.confidence) || 50) - 50) / 2.5 : Number(trade.score) || 0;
 
   return {
     symbol: trade.symbol,
@@ -134,7 +141,13 @@ export function buildDayTradeRow(trade = {}) {
     openingRangePosition: position,
     score: Number(trade.score) || 0,
     confidence: Number(trade.confidence) || 0,
-    tradeability: tradeabilityScore({ atrPct, relativeVolume, score: trade.score, price }),
+    source,
+    decisionSourceLabel: trade.decisionSourceLabel ?? null,
+    engineAction: trade.engine?.action ?? action,
+    conviction: source === 'ai' ? Number(trade.confidence) || null : null,
+    aiThesis: ai?.thesis ?? null,
+    agreesWithEngine: ai?.agreesWithEngine ?? null,
+    tradeability: tradeabilityScore({ atrPct, relativeVolume, score: edgeScore, price }),
     relativeVolume: round(relativeVolume),
     rsi: round(trade.indicators?.rsi14, 1),
     adx,
@@ -150,6 +163,16 @@ export function buildDayTradeRow(trade = {}) {
       sellBelow: round(trade.triggers?.sellBelow),
     },
     plan,
+    sessionPattern: pattern
+      ? {
+          label: pattern.label,
+          dayType: pattern.dayType,
+          bias: pattern.bias,
+          gapPct: round(pattern.gapPct),
+          closePositionPct: pattern.closePositionPct ?? null,
+          vwapTimeAbovePct: pattern.vwapTimeAbovePct ?? null,
+        }
+      : null,
     reasons: (trade.reasons || []).slice(0, 3),
     why: buildWhy({
       action,

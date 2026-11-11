@@ -313,6 +313,7 @@ export function analyzeNews(items = []) {
     risks,
     headlines: annotated.map((item) => ({
       title: item.title,
+      summary: item.summary,
       publisher: item.publisher,
       link: item.link,
       publishedAt: item.publishedAt,
@@ -323,6 +324,109 @@ export function analyzeNews(items = []) {
       tags: item.tagLabels,
     })),
   };
+}
+
+const numberOrNull = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const pctOrNull = (value) => {
+  const parsed = numberOrNull(value);
+  return parsed === null ? null : Number((parsed * 100).toFixed(1));
+};
+
+/**
+ * Read the earnings report and the event calendar for a ticker: when the next
+ * report lands, how the last four quarters actually came in against consensus,
+ * and the growth the Street is carrying. The forecast desk reads this beside
+ * the chart and the news, because an imminent or surprising report can override
+ * a clean technical setup.
+ */
+export function summarizeEarnings(fundamentals = {}) {
+  if (!fundamentals || typeof fundamentals !== 'object') return null;
+
+  const date = fundamentals.earningsDate ? new Date(fundamentals.earningsDate) : null;
+  const validDate = date && !Number.isNaN(date.getTime()) ? date : null;
+  const daysUntil = validDate ? Math.ceil((validDate.getTime() - Date.now()) / 86_400_000) : null;
+
+  const quarters = (Array.isArray(fundamentals.earningsHistory) ? fundamentals.earningsHistory : [])
+    .map((entry) => ({
+      quarter: entry?.quarter ? String(entry.quarter).slice(0, 10) : null,
+      epsActual: numberOrNull(entry?.epsActual),
+      epsEstimate: numberOrNull(entry?.epsEstimate),
+      surprisePercent: numberOrNull(entry?.surprisePercent),
+    }))
+    .filter((entry) => entry.epsActual !== null || entry.epsEstimate !== null)
+    .slice(0, 4);
+
+  const estimates = (Array.isArray(fundamentals.earningsEstimates) ? fundamentals.earningsEstimates : [])
+    .filter((entry) => entry && entry.period)
+    .slice(0, 4)
+    .map((entry) => ({
+      period: entry.period,
+      endDate: entry.endDate ?? null,
+      epsGrowthPct: pctOrNull(entry.epsGrowth),
+      revenueGrowthPct: pctOrNull(entry.revenueGrowth),
+    }));
+
+  const reported = quarters.filter((entry) => entry.surprisePercent !== null).length;
+  const beats = quarters.filter((entry) => entry.surprisePercent !== null && entry.surprisePercent > 0).length;
+  const surprises = quarters.map((entry) => entry.surprisePercent).filter((value) => value !== null);
+  const avgSurprisePct = surprises.length
+    ? Number((surprises.reduce((sum, value) => sum + value, 0) / surprises.length).toFixed(1))
+    : null;
+  let beatStreak = 0;
+  for (const quarter of quarters) {
+    if (quarter.surprisePercent !== null && quarter.surprisePercent > 0) beatStreak += 1;
+    else break;
+  }
+  const surpriseTrend =
+    quarters.length >= 2 && quarters[0]?.surprisePercent !== null && quarters[1]?.surprisePercent !== null
+      ? quarters[0].surprisePercent - quarters[1].surprisePercent > 2
+        ? 'improving'
+        : quarters[0].surprisePercent - quarters[1].surprisePercent < -2
+          ? 'deteriorating'
+          : 'steady'
+      : null;
+  const nextReportRisk =
+    daysUntil === null ? null : daysUntil <= 7 ? 'high' : daysUntil <= 21 ? 'medium' : 'low';
+
+  const earnings = {
+    nextDate: validDate ? validDate.toISOString().slice(0, 10) : null,
+    daysUntil,
+    label:
+      daysUntil === null
+        ? null
+        : daysUntil < 0
+          ? 'Earnings reported already'
+          : daysUntil === 0
+            ? 'Earnings today'
+            : daysUntil === 1
+              ? 'Earnings tomorrow'
+              : `Earnings in ${daysUntil} days`,
+    quarters,
+    reportedQuarters: reported,
+    beats,
+    misses: reported - beats,
+    beatStreak,
+    avgSurprisePct,
+    surpriseTrend,
+    nextReportRisk,
+    revenueGrowthPct: pctOrNull(fundamentals.revenueGrowth),
+    earningsGrowthPct: pctOrNull(fundamentals.earningsGrowth),
+    estimates,
+    analystTarget: numberOrNull(fundamentals.analystTarget),
+    recommendationMean: numberOrNull(fundamentals.recommendationMean),
+    numberOfAnalysts: numberOrNull(fundamentals.numberOfAnalysts),
+  };
+
+  // Nothing worth sending: no date, no reported quarters and no growth read.
+  if (!earnings.nextDate && !quarters.length && earnings.revenueGrowthPct === null && earnings.earningsGrowthPct === null) {
+    return null;
+  }
+  return earnings;
 }
 
 /** Translate a stream of analyst actions into a tilt plus the latest moves. */

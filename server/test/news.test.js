@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeAnalystActions, analyzeHeadline, analyzeNews, relevanceScore } from '../src/analytics/news.js';
+import { analyzeAnalystActions, analyzeHeadline, analyzeNews, relevanceScore, summarizeEarnings } from '../src/analytics/news.js';
 import { decodeEntities, extractArticle, rankHeadlines } from '../src/lib/newsFeed.js';
 
 test('bullish headline is scored positive and tagged', () => {
@@ -69,6 +69,38 @@ test('news digest aggregates sentiment, deals and risks', () => {
   assert.ok(digest.catalysts.length >= 2);
   assert.ok(digest.risks.length === 1);
   assert.ok(digest.sentiment > -100 && digest.sentiment < 100);
+});
+
+test('earnings summary reads the next date, the beat record and the growth', () => {
+  const nextDate = new Date(Date.now() + 9 * 86_400_000).toISOString();
+  const earnings = summarizeEarnings({
+    earningsDate: nextDate,
+    earningsHistory: [
+      { quarter: '2026-09-30T00:00:00.000Z', epsActual: 1.25, epsEstimate: 1.1, surprisePercent: 13.6 },
+      { quarter: '2026-06-30T00:00:00.000Z', epsActual: 0.9, epsEstimate: 1.0, surprisePercent: -10 },
+    ],
+    revenueGrowth: 0.22,
+    earningsGrowth: 0.31,
+    earningsEstimates: [{ period: '0q', epsGrowth: 0.15, revenueGrowth: 0.12 }],
+    analystTarget: 210,
+    recommendationMean: 1.6,
+    numberOfAnalysts: 38,
+  });
+
+  assert.equal(earnings.nextDate, nextDate.slice(0, 10));
+  assert.equal(earnings.daysUntil, 9);
+  assert.match(earnings.label, /Earnings in 9 days/);
+  assert.equal(earnings.reportedQuarters, 2);
+  assert.equal(earnings.beats, 1);
+  assert.equal(earnings.misses, 1);
+  assert.equal(earnings.revenueGrowthPct, 22);
+  assert.equal(earnings.earningsGrowthPct, 31);
+  assert.equal(earnings.estimates[0].epsGrowthPct, 15);
+});
+
+test('an empty fundamental record produces no earnings block', () => {
+  assert.equal(summarizeEarnings(null), null);
+  assert.equal(summarizeEarnings({}), null);
 });
 
 test('analyst actions produce a tilt over the lookback window', () => {

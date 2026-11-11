@@ -11,6 +11,7 @@ import DayTradeBoardPage from './pages/DayTradeBoardPage.jsx';
 import DayTradePage from './pages/DayTradePage.jsx';
 import HotStocksPage from './pages/HotStocksPage.jsx';
 import FocusPage from './pages/FocusPage.jsx';
+import ForecastPage from './pages/ForecastPage.jsx';
 import OptionsLabPage from './pages/OptionsLabPage.jsx';
 import PortfolioPage from './pages/PortfolioPage.jsx';
 
@@ -30,6 +31,7 @@ const TABS = [
   { id: 'hot', label: 'Hot Stocks', path: '/hot', icon: '⇗' },
   { id: 'portfolio', label: 'Portfolio', path: '/portfolio', icon: '▤' },
   { id: 'daytrade', label: 'Day Trading', path: '/daytrade', icon: '⚡' },
+  { id: 'forecast', label: 'Forecast', path: '/forecast/NVDA', icon: '◈' },
   { id: 'market', label: 'Market', path: '/market', icon: '◧' },
   { id: 'analyze', label: 'Analyzer', path: '/analyze/NVDA', icon: '◔' },
   { id: 'options', label: 'Options Lab', path: '/options/NVDA', icon: '⌁' },
@@ -83,7 +85,9 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
-  const active = ['focus', 'hot', 'portfolio', 'daytrade', 'market', 'analyze', 'options', 'agent'].includes(route.page)
+  const active = ['focus', 'hot', 'portfolio', 'daytrade', 'forecast', 'market', 'analyze', 'options', 'agent'].includes(
+    route.page,
+  )
     ? route.page
     : 'focus';
   const page = (() => {
@@ -95,6 +99,8 @@ export default function App() {
       case 'daytrade':
         // No ticker in the URL = the best-setups board; a ticker = its read.
         return route.param ? <DayTradePage symbol={route.param} go={go} /> : <DayTradeBoardPage go={go} />;
+      case 'forecast':
+        return <ForecastPage symbol={route.param || 'NVDA'} go={go} />;
       case 'analyze':
         return <AnalyzerPage symbol={route.param || 'NVDA'} go={go} />;
       case 'options':

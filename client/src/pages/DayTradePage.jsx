@@ -175,6 +175,62 @@ export default function DayTradePage({ symbol, go }) {
         )}
       </section>
 
+      {data.sessionPattern && (
+        <section className="panel day-pattern-panel">
+          <div className="panel-head">
+            <div>
+              <div className="eyebrow">WHOLE-DAY PATTERN</div>
+              <h2>{data.sessionPattern.label}</h2>
+            </div>
+            <div className="chip-row">
+              <span
+                className={`chip ${
+                  data.sessionPattern.bias === 'bullish' ? 'long' : data.sessionPattern.bias === 'bearish' ? 'short' : ''
+                }`}
+              >
+                {data.sessionPattern.bias} day · {data.sessionPattern.dayType}
+              </span>
+              {data.sessionPattern.vwapSide && <span className="chip">VWAP {data.sessionPattern.vwapSide}</span>}
+            </div>
+          </div>
+          <p className="option-note">{data.sessionPattern.summary}</p>
+          <div className="day-level-grid">
+            <Stat label="Open" value={money(data.sessionPattern.open)} />
+            <Stat label="Day range" value={`${money(data.sessionPattern.low)} – ${money(data.sessionPattern.high)}`} />
+            <Stat
+              label="Gap vs prior close"
+              value={pct(data.sessionPattern.gapPct)}
+              tone={toneForChange(data.sessionPattern.gapPct)}
+            />
+            <Stat
+              label="Close in range"
+              value={`${data.sessionPattern.closePositionPct}%`}
+              hint="0% = day low, 100% = day high"
+            />
+            <Stat
+              label="Time above VWAP"
+              value={data.sessionPattern.vwapTimeAbovePct === null ? '—' : `${data.sessionPattern.vwapTimeAbovePct}%`}
+              hint={`VWAP side: ${data.sessionPattern.vwapSide || 'unknown'}`}
+            />
+            <Stat
+              label="First half"
+              value={pct(data.sessionPattern.firstHalfPct)}
+              tone={toneForChange(data.sessionPattern.firstHalfPct)}
+            />
+            <Stat
+              label="Second half"
+              value={pct(data.sessionPattern.secondHalfPct)}
+              tone={toneForChange(data.sessionPattern.secondHalfPct)}
+            />
+            <Stat
+              label="Extremes"
+              value={`High ${data.sessionPattern.highTiming} · low ${data.sessionPattern.lowTiming}`}
+              hint={`High printed ${data.sessionPattern.highProgressPct}% into the session, low ${data.sessionPattern.lowProgressPct}%`}
+            />
+          </div>
+        </section>
+      )}
+
       <div className="day-grid">
         <section className="panel day-chart-panel">
           <div className="panel-head">

@@ -94,6 +94,34 @@ test('a short read is bucketed as a sell with a downside plan', () => {
   assert.ok(row.plan.targets[0].price < row.plan.entry);
 });
 
+test('an AI-decided row keeps the engine read and carries the model thesis', () => {
+  const row = buildDayTradeRow({
+    ...trade(),
+    source: 'ai',
+    decisionSourceLabel: 'openai · gpt-4o-mini',
+    confidence: 82,
+    engine: { action: 'wait' },
+    ai: { thesis: 'Trend day up held VWAP all session.', agreesWithEngine: false },
+    sessionPattern: {
+      label: 'Trend day up — buyers controlled the session',
+      dayType: 'trend-up',
+      bias: 'bullish',
+      gapPct: 0.6,
+      closePositionPct: 92,
+      vwapTimeAbovePct: 88,
+    },
+  });
+
+  assert.equal(row.source, 'ai');
+  assert.equal(row.engineAction, 'wait');
+  assert.equal(row.conviction, 82);
+  assert.match(row.aiThesis, /VWAP/);
+  assert.equal(row.agreesWithEngine, false);
+  assert.equal(row.sessionPattern.dayType, 'trend-up');
+  // The model's conviction, not the mechanical score, now drives the edge.
+  assert.ok(row.tradeability > 0);
+});
+
 test('a no-trade read carries the breakout triggers instead of a plan', () => {
   const row = buildDayTradeRow(trade({ action: 'wait', score: 1, plan: null, confidence: 48 }));
 

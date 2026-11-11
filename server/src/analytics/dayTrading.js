@@ -1,4 +1,4 @@
-import { adx, atr, ema, last, rsi } from './indicators.js';
+import { adx, atr, ema, last, normalizedSlope, rsi } from './indicators.js';
 import { HttpError } from '../lib/errors.js';
 
 /**
@@ -36,6 +36,7 @@ const round = (value, digits = 2) => {
 };
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const f = (value, digits = 2) => (Number.isFinite(value) ? value.toFixed(digits) : '—');
 
 const BAR_MINUTES = { '1m': 1, '2m': 2, '5m': 5, '15m': 15, '30m': 30, '60m': 60 };
 
@@ -100,6 +101,178 @@ function buildVwap(bars) {
 
 const average = (values) =>
   values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+
+/**
+ * Whole-day pattern read: the shape of the session, not just the latest bar.
+ *
+ * Day traders need to know what kind of day it is before the last hour means
+ * anything: did it gap and go, trend all session, reverse, fail a breakout, or
+ * stay in a range? The read covers the gap vs the prior close, the opening
+ * drive, where the day's high and low printed (early / midday / late), how much
+ * of the session traded above or below VWAP, the first-half vs second-half
+ * move and where the close sits in the day range.
+ *
+ * This is evidence for the LLM desk, not a signal of its own: `bias` exists to
+ * describe the day's lean, while the model still makes the BUY / SELL / WAIT
+ * call. Pure and deterministic, so every branch is unit-tested.
+ */
+export function analyzeSessionPattern({ bars = [], priorBars = [], vwapSeries = [], atr: atrValue = null } = {}) {
+  const clean = (Array.isArray(bars) ? bars : []).filter((bar) => bar && Number.isFinite(bar.close));
+  if (clean.length < 2) return null;
+
+  const open = Number.isFinite(clean[0].open) ? clean[0].open : clean[0].close;
+  const close = clean[clean.length - 1].close;
+  const high = Math.max(...clean.map((bar) => (Number.isFinite(bar.high) ? bar.high : bar.close)));
+  const low = Math.min(...clean.map((bar) => (Number.isFinite(bar.low) ? bar.low : bar.close)));
+  const prior = priorBars.filter((bar) => bar && Number.isFinite(bar.close));
+  const priorClose = prior.length ? prior[prior.length - 1].close : null;
+
+  const rangePct = open ? ((high - low) / open) * 100 : null;
+  const changePct = open ? ((close - open) / open) * 100 : null;
+  const gapPct = Number.isFinite(priorClose) && priorClose ? ((open - priorClose) / priorClose) * 100 : null;
+  const closePositionPct = high > low ? clamp((close - low) / (high - low), 0, 1) * 100 : 50;
+
+  const vwapPairs = clean
+    .map((bar, index) => ({ close: bar.close, vwap: vwapSeries[index] }))
+    .filter((pair) => Number.isFinite(pair.vwap) && pair.vwap > 0);
+  const vwapTimeAbovePct = vwapPairs.length
+    ? Math.round((vwapPairs.filter((pair) => pair.close >= pair.vwap).length / vwapPairs.length) * 100)
+    : null;
+  const vwapSide =
+    vwapTimeAbovePct === null ? null : vwapTimeAbovePct >= 60 ? 'above' : vwapTimeAbovePct <= 40 ? 'below' : 'crossed';
+
+  const midIndex = Math.floor((clean.length - 1) / 2);
+  const midPrice = clean[midIndex].close;
+  const firstHalfPct = open ? ((midPrice - open) / open) * 100 : null;
+  const secondHalfPct = midPrice ? ((close - midPrice) / midPrice) * 100 : null;
+  const slopePct = normalizedSlope(clean.map((bar) => bar.close));
+
+  const highIndex = clean.findIndex((bar) => (Number.isFinite(bar.high) ? bar.high : bar.close) === high);
+  const lowIndex = clean.findIndex((bar) => (Number.isFinite(bar.low) ? bar.low : bar.close) === low);
+  const progressPct = (index) => (clean.length > 1 ? Math.round((Math.max(index, 0) / (clean.length - 1)) * 100) : 0);
+  const highProgressPct = progressPct(highIndex);
+  const lowProgressPct = progressPct(lowIndex);
+  const timing = (progress) => (progress <= 35 ? 'early' : progress >= 65 ? 'late' : 'midday');
+  const highTiming = timing(highProgressPct);
+  const lowTiming = timing(lowProgressPct);
+
+  const strongClose = closePositionPct >= 66;
+  const weakClose = closePositionPct <= 34;
+  const greenDay = close >= open;
+  const gapUp = gapPct !== null && gapPct >= 0.3;
+  const gapDown = gapPct !== null && gapPct <= -0.3;
+  // Compare the day's range with what the bar size can deliver over a whole
+  // session: n bars of typical range (ATR) sum to roughly ATR × √n, so a day
+  // that stays inside ~80% of that never left a tight band. Comparing a 7-hour
+  // session to a single hourly ATR would almost never call a range day.
+  const expectedSessionRange =
+    Number.isFinite(atrValue) && atrValue > 0 ? atrValue * Math.sqrt(clean.length) * 0.8 : null;
+  const tightRange = expectedSessionRange !== null && high - low <= expectedSessionRange;
+
+  let dayType = 'two-way';
+  let label = 'Two-way day — neither side controlled the session';
+  if (
+    firstHalfPct !== null &&
+    secondHalfPct !== null &&
+    firstHalfPct <= -0.2 &&
+    secondHalfPct >= 0.2 &&
+    strongClose
+  ) {
+    dayType = 'reversal-up';
+    label = 'Reversal day — sold off early, then bought back into the close';
+  } else if (
+    firstHalfPct !== null &&
+    secondHalfPct !== null &&
+    firstHalfPct >= 0.2 &&
+    secondHalfPct <= -0.2 &&
+    weakClose
+  ) {
+    dayType = 'reversal-down';
+    label = 'Reversal day — rallied early, then sold into the close';
+  } else if (strongClose && greenDay && (gapUp || slopePct > 0.01)) {
+    dayType = gapUp ? 'gap-and-go-up' : 'trend-up';
+    label = gapUp
+      ? 'Gap-and-go day up — opened strong and held the highs'
+      : 'Trend day up — buyers controlled the session';
+  } else if (weakClose && !greenDay && (gapDown || slopePct < -0.01)) {
+    dayType = gapDown ? 'gap-and-go-down' : 'trend-down';
+    label = gapDown
+      ? 'Gap-and-go day down — opened weak and kept the lows'
+      : 'Trend day down — sellers controlled the session';
+  } else if (strongClose && highTiming === 'late') {
+    dayType = 'late-breakout-up';
+    label = 'Late breakout — the day high printed into the close';
+  } else if (weakClose && lowTiming === 'late') {
+    dayType = 'late-breakdown';
+    label = 'Late breakdown — the day low printed into the close';
+  } else if (tightRange) {
+    dayType = 'range-day';
+    label = 'Range day — price never escaped a tight band';
+  } else if (highTiming === 'early' && closePositionPct < 55) {
+    dayType = 'failed-breakout';
+    label = 'Failed breakout — the early high was sold all session';
+  } else if (lowTiming === 'early' && closePositionPct > 45) {
+    dayType = 'failed-breakdown';
+    label = 'Failed breakdown — the early low was bought all session';
+  }
+
+  const biasScore = Math.round(
+    clamp(
+      0.45 * ((closePositionPct - 50) / 50) +
+        0.25 * clamp(slopePct / 0.3, -1, 1) +
+        0.2 * (((vwapTimeAbovePct ?? 50) - 50) / 50) +
+        0.1 * clamp((secondHalfPct ?? 0) / 0.5, -1, 1),
+      -1,
+      1,
+    ) * 100,
+  );
+  const bias = biasScore >= 30 ? 'bullish' : biasScore <= -30 ? 'bearish' : 'neutral';
+
+  const summary =
+    `${label}. Open ${f(open)}, range ${f(low)}–${f(high)} (${f(rangePct, 1)}% wide), close ${f(close)} at ` +
+    `${Math.round(closePositionPct)}% of the day range` +
+    (Number.isFinite(gapPct) ? `, ${gapPct >= 0 ? 'gap up' : 'gap down'} ${f(Math.abs(gapPct), 1)}% vs the prior close` : '') +
+    `. First half ${firstHalfPct >= 0 ? '+' : ''}${f(firstHalfPct, 1)}%, second half ` +
+    `${secondHalfPct >= 0 ? '+' : ''}${f(secondHalfPct, 1)}%; ` +
+    (vwapTimeAbovePct === null
+      ? 'session VWAP unavailable'
+      : `price held above VWAP ${vwapTimeAbovePct}% of the session`) +
+    `. The high printed ${highTiming} (${highProgressPct}% in), the low ${lowTiming} (${lowProgressPct}% in).`;
+
+  const drivers = [];
+  if (Number.isFinite(gapPct)) drivers.push(`${gapPct >= 0 ? 'Gap up' : 'Gap down'} ${f(Math.abs(gapPct), 1)}% vs the prior close.`);
+  drivers.push(`Close sits at ${Math.round(closePositionPct)}% of the day range (${f(rangePct, 1)}% wide).`);
+  if (vwapTimeAbovePct !== null) {
+    drivers.push(`Price traded above session VWAP ${vwapTimeAbovePct}% of the day (${vwapSide}).`);
+  }
+  drivers.push(`High printed ${highTiming}, low printed ${lowTiming}; second half ${secondHalfPct >= 0 ? '+' : ''}${f(secondHalfPct, 1)}%.`);
+
+  return {
+    label,
+    dayType,
+    bias,
+    biasScore,
+    summary,
+    drivers,
+    open: round(open),
+    high: round(high),
+    low: round(low),
+    close: round(close),
+    changePct: round(changePct),
+    gapPct: round(gapPct),
+    rangePct: round(rangePct),
+    closePositionPct: Math.round(closePositionPct),
+    vwapSide,
+    vwapTimeAbovePct,
+    slopePct: round(slopePct, 3),
+    firstHalfPct: round(firstHalfPct),
+    secondHalfPct: round(secondHalfPct),
+    highTiming,
+    lowTiming,
+    highProgressPct,
+    lowProgressPct,
+  };
+}
 
 /**
  * Transparent setup score: + is long, − is short. Exported so the rules can be
@@ -252,6 +425,7 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '60m' } = {
 
   const price = Number(quote.price) || latest.bars[latest.bars.length - 1].close;
   const vwap = vwapSeries[vwapSeries.length - 1];
+  const latestOffset = bars.length - latest.bars.length;
   const ema9Value = last(ema9Series) ?? price;
   const ema20Value = last(ema20Series) ?? price;
   const rsiValue = last(rsiSeries) ?? 50;
@@ -388,6 +562,15 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '60m' } = {
     note: 'First-hour range breakout levels — wait for an hourly candle to close beyond the level, not just a wick.',
   };
 
+  // Whole-day shape: what kind of session is this, where did the extremes
+  // print and which side held VWAP. The LLM desk reads it before the last bar.
+  const sessionPattern = analyzeSessionPattern({
+    bars: latest.bars,
+    priorBars: prior ? prior.bars : [],
+    vwapSeries: vwapSeries.slice(latestOffset),
+    atr: atrValue,
+  });
+
   // ---------- Chart payload: recent sessions, aligned overlays ----------
   const chartSessionCount = barMinutes >= 60 ? 5 : 2;
   const chartGroups = groups.slice(-chartSessionCount);
@@ -455,6 +638,7 @@ export function buildDayTrade({ quote = {}, history = {}, interval = '60m' } = {
       aboveVwap,
       ema9Above20: emaUptrend,
     },
+    sessionPattern,
     action,
     actionLabel: action === 'buy' ? 'Buy' : action === 'sell' ? 'Sell' : 'Wait',
     score,

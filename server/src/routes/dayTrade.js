@@ -21,6 +21,7 @@ dayTradeRouter.get(
         scope: req.query.scope ? String(req.query.scope) : 'market',
         depth: req.query.depth,
         refresh: req.query.refresh === '1',
+        ai: parseAi(req.query.ai),
       }),
     );
   }),

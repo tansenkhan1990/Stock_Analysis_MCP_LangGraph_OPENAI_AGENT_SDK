@@ -57,6 +57,15 @@ export const api = {
         refresh: refresh ? 1 : undefined,
       })}`,
     ),
+  forecast: (symbol, { days = undefined, refresh = false } = {}) =>
+    request(`/forecast/${symbol}${qs({ days, refresh: refresh ? 1 : undefined })}`),
+  forecastBoard: ({ scope, depth, refresh = false } = {}) =>
+    request(`/forecast/board${qs({ scope, depth, refresh: refresh ? 1 : undefined })}`),
+  forecastAsk: (symbol, { question, history = [], days = undefined, refresh = false } = {}) =>
+    request(`/forecast/${symbol}/ask`, {
+      method: 'POST',
+      body: JSON.stringify({ question, history, days, refresh }),
+    }),
   analysis: (symbol, { options = true, persist = false, refresh = false } = {}) =>
     request(`/analysis/${symbol}${qs({ options: options ? 1 : 0, persist: persist ? 1 : 0, refresh: refresh ? 1 : 0 })}`),
   scan: (symbols) => request(`/scan${qs({ symbols: Array.isArray(symbols) ? symbols.join(',') : symbols })}`),

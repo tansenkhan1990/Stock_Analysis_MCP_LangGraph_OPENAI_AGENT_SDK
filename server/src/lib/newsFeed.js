@@ -1,6 +1,7 @@
 import { analyzeNews, relevanceScore } from '../analytics/news.js';
 import { cache } from './cache.js';
 import { fetchText } from './http.js';
+import { getNews } from './yahoo.js';
 
 /**
  * Yahoo Finance news layer: per-ticker RSS feed, relevance ranking, and
@@ -119,6 +120,36 @@ export function rankHeadlines(items, symbol, companyName, limit = 12) {
   // catalyst and skews the signal.
   const pool = relevant.length ? relevant : scored.slice(0, 5);
   return pool.slice(0, limit);
+}
+
+/** Dedupe headlines from several feeds by link, falling back to the title. */
+export function mergeHeadlines(...lists) {
+  const seen = new Set();
+  const merged = [];
+  for (const list of lists) {
+    for (const item of list || []) {
+      if (!item?.title) continue;
+      const key = String(item.link || item.title)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Every headline we can find for a ticker — Yahoo's search feed plus the
+ * per-ticker RSS feed, deduped and relevance-ranked. The forecast desk reads
+ * this full set (with summaries) rather than the newest handful.
+ */
+export async function getForecastNews(symbol, companyName, { limit = 24 } = {}) {
+  const [search, rss] = await Promise.all([getNews(symbol, { limit: 24 }), getRssHeadlines(symbol)]);
+  const ranked = rankHeadlines(mergeHeadlines(search, rss), symbol, companyName, limit);
+  return analyzeNews(ranked);
 }
 
 /**

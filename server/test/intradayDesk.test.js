@@ -160,6 +160,10 @@ test('the LLM desk call parses fenced JSON and rejects unparseable output', asyn
   assert.equal(dossier.symbol, 'NVDA');
   assert.equal(dossier.intraday.mechanicalAction, trade.action);
   assert.ok(dossier.intraday.vwap > 0);
+  // The model reads the shape of the whole session, not just the last bar.
+  assert.ok(dossier.sessionPattern);
+  assert.ok(dossier.sessionPattern.dayType);
+  assert.ok(dossier.sessionPattern.summary.includes('First half'));
 
   const fakeChat = async () => ({
     content: '```json\n{"action":"sell","conviction":72,"thesis":"Fade the failed breakout below VWAP.","levels":{"entry":0,"stop":0},"triggers":{"buyAbove":0,"sellBelow":0}}\n```',
